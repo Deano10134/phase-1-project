@@ -13,14 +13,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const select = document.getElementById('competitions');
     const select2 = document.getElementById('teams');
     const searchbtn = document.getElementById('searchBtn');
+    const searchInput = document.getElementById('searchInput');
+    const positionFilter = document.getElementById('positionFilter');
+    const teamsSelect = document.getElementById('teams');
 
     loadCompetitions(data, select);
 
     if (searchbtn) {
         searchbtn.addEventListener('click', async () => {
-            const searchInput = document.getElementById('searchInput');
-            const positionFilter = document.getElementById('positionFilter');
-            const teamsSelect = document.getElementById('teams');
+            
             const teamId = teamsSelect && teamsSelect.value ? teamsSelect.value : null;
             const search = searchInput ? searchInput.value : '';
             const position = positionFilter ? positionFilter.value : '';
