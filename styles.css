@@ -1,0 +1,123 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 2em;
+  background: #f8f9fa;
+  color: #222;
+}
+
+body.light-mode {
+    background: #fff;
+    color: #222;
+}
+body.dark-mode {
+    background: #222;
+    color: #fff;
+}
+
+/* Make #app background adapt to theme */
+body.light-mode #app {
+    background: #fff;
+    color: #222;
+}
+body.dark-mode #app {
+    background: #333;
+    color: #fff;
+}
+
+/* Inputs, selects, buttons adapt to theme */
+body.light-mode input,
+body.light-mode select {
+    background: #fff;
+    color: #222;
+    border: 1px solid #ccc;
+}
+body.dark-mode input,
+body.dark-mode select {
+    background: #444;
+    color: #fff;
+    border: 1px solid #555;
+}
+
+body.light-mode button {
+    background: #007bff;
+    color: #fff;
+}
+body.dark-mode button {
+    background: #444;
+    color: #fff;
+    border: 1px solid #555;
+}
+body.dark-mode button:hover {
+    background: #222;
+}
+
+/* Cards adapt to theme */
+body.light-mode .player-card,
+body.light-mode .team-card {
+    background: #fafafa;
+    color: #222;
+    border: 1px solid #e0e0e0;
+}
+body.dark-mode .player-card,
+body.dark-mode .team-card {
+    background: #444;
+    color: #fff;
+    border: 1px solid #555;
+}
+
+#app {
+  max-width: 700px;
+  margin: auto;
+  background: #fff;
+  padding: 2em;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+h1 {
+  text-align: center;
+  margin-bottom: 1.5em;
+}
+
+#search-container {
+  display: flex;
+  gap: 1em;
+  margin-bottom: 2em;
+  justify-content: center;
+}
+
+input, select, button {
+  padding: 0.5em;
+  font-size: 1em;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+
+button {
+  background: #007bff;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: #0056b3;
+}
+
+#results-container {
+  margin-top: 2em;
+}
+
+.player-card, .team-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 1em;
+  margin-bottom: 1em;
+  background: #fafafa;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+
+.player-card strong, .team-card strong {
+  font-size: 1.1em;
+}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Football Search App</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="light-mode">
+    <div id="app">
+        <h1>Football Search App</h1>
+        <p> Welcome to Dean's Football search app. This simple web that allows you to search any football player, team or matches in the world. </p>
+        <p> The app has been developed as part of my Software Engineer Course that I am doing to showcase my skills in JavaScript, HTML and CSS.</p>
+        <div id="search-container"></div>
+        <input type="text" id="searchInput" placeholder="Search players or teams..." />
+        <button id="searchBtn">Search</button>
+        <select id="positionFilter">
+            <option value="">All Positions</option>
+            <option value="Forward">Forward</option>
+            <option value="Midfielder">Midfielder</option>
+            <option value="Defender">Defender</option>
+            <option value="Goalkeeper">Goalkeeper</option>
+        </select>
+        <select id="competitions">
+            <option value="">Select Competitions</option>
+        </select>
+        <select id="teams">
+            <option value="">Select Teams</option>
+        </select>
+        <ul id="squad"></ul>
+        <button id="toggleThemeBtn">Switch to Dark Mode</button>
+        <!-- Results will be displayed here -->
+        <div id="results-container"></div>
+    </div>
+    <script defer src="./src/index.js"></script>
+    <footer>
+        <p>&copy; 2025 Dean's Football App.</p>
+    </footer>
+</body>
+</html>
