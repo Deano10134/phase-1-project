@@ -11,8 +11,8 @@ The Football Search App allows users to search for football teams, players, and 
 ## Code Overview
 
 - **Frontend:** Built with HTML, CSS, and JavaScript.
-- **API Integration:** Fetches football data from a public API (e.g., [API-Football](https://www.api-football.com/)).
-- **State Management:** Utilizes local state or Redux for managing search results and user interactions.
+- **API Integration:** Fetches football data from a public API (e.g., [API-Football](https://api.football-data.org/v4/competitions)).
+- **State Management:** Utilises local state or Redux for managing search results and user interactions.
 
 ## How to Use
 
