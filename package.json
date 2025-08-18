@@ -1,6 +1,7 @@
 {
   "name": "phase-1-project",
   "version": "1.0.0",
+  "type": "module",
   "description": "The Football Search App allows users to search for football teams, players, and match information. It provides an intuitive interface for exploring football data and statistics for competitions around the world.",
   "main": "index.js",
   "scripts": {
