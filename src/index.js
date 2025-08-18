@@ -2,8 +2,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const competitionsSelect = document.getElementById('competitions');
   const teamsSelect = document.getElementById('teams');
   const searchInput = document.getElementById('searchInput');
+  const searchBtn = document.getElementById('searchBtn');
   const positionFilter = document.getElementById('positionFilter');
   const toggleThemeBtn = document.getElementById('toggleThemeBtn');
+  
+  // Caching & search helpers
+  let cachedTeams = [];                // teams for the currently loaded competition
+  const cachedSquads = new Map();      // teamId -> squad array
+  const SEARCH_DEBOUNCE_MS = 300;
+
+  const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
+    let id = null;
+    return (...args) => {
+      if (id) clearTimeout(id);
+      id = setTimeout(() => fn(...args), ms);
+    };
+  };
 
   // Use a local proxy during development to avoid CORS issues.
   // Start your proxy server (server/index.js) and keep it running at http://localhost:3000
@@ -152,27 +166,37 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Load teams based on selected competition, populate select and display list
-  competitionsSelect.addEventListener('change', async () => {
-    const competitionId = competitionsSelect.value;
-    if (!competitionId) return;
+  async function loadTeamsForCompetition(competitionId) {
+    if (!competitionId) {
+      populateSelect(teamsSelect, []);
+      displayTeams([]);
+      displayPlayers([]);
+      return;
+    }
     try {
       const teamsData = await fetchAPI(`/competitions/${competitionId}/teams`);
       const teams = teamsData.teams || [];
+      // cache teams for global search
+      cachedTeams = teams;
+      cachedSquads.clear();
       populateSelect(teamsSelect, teams, 'id', 'name');
       displayTeams(teams);
       if (teams.length > 0) {
         teamsSelect.value = teams[0].id;
-        loadAndShowPlayersForTeam(teams.id);
+        // load players for the first team by id
+        await loadAndShowPlayersForTeam(teams[0].id);
       } else {
         displayPlayers([]);
       }
     } catch (e) {
       console.error('Failed to load teams:', e);
+      cachedTeams = [];
+      cachedSquads.clear();
       populateSelect(teamsSelect, []);
       displayTeams([]);
       displayPlayers([]);
     }
-  });
+  }
 
   // Load and display players (squad) for a team with optional filters
   async function loadAndShowPlayersForTeam(teamId) {
@@ -180,6 +204,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const teamData = await fetchAPI(`/teams/${teamId}`);
       const squad = teamData.squad || [];
+      // cache squad for this team to avoid refetching during searches
+      cachedSquads.set(teamId, squad);
       const search = searchInput.value.toLowerCase();
       const position = positionFilter.value;
 
@@ -196,37 +222,148 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Update players display when search input or position filter changes
-  searchInput.addEventListener('input', () => {
-    if (teamsSelect.value) {
-      loadAndShowPlayersForTeam(teamsSelect.value);
+  // Search across all teams in the selected competition (fetch squads as needed)
+  async function searchAcrossCompetitionTeams(searchTerm) {
+    const compId = competitionsSelect.value;
+    if (!compId) return displayPlayers([]);
+    if (!cachedTeams?.length) {
+      // ensure teams are loaded (this will populate cachedTeams)
+      await loadTeamsForCompetition(compId);
     }
-  });
-
-  positionFilter.addEventListener('change', () => {
-    if (teamsSelect.value) {
-      loadAndShowPlayersForTeam(teamsSelect.value);
+    const results = [];
+    for (const team of cachedTeams) {
+      const teamId = team.id;
+      let squad = cachedSquads.get(teamId);
+      if (!squad) {
+        try {
+          const teamData = await fetchAPI(`/teams/${teamId}`);
+          squad = teamData.squad || [];
+          cachedSquads.set(teamId, squad);
+        } catch (e) {
+          console.error('Failed to load squad for team', teamId, e);
+          continue;
+        }
+      }
+      for (const p of squad) {
+        if (p.name && p.name.toLowerCase().includes(searchTerm)) {
+          results.push({ ...p, team: team.name || '' });
+        }
+      }
     }
-  });
+    displayPlayers(results);
+  }
 
-  // Update players if team changes
-  teamsSelect.addEventListener('change', async () => {
+  // Search competitions by name and display matches
+  async function searchCompetitions(query) {
+    try {
+      const data = await fetchAPI('/competitions');
+      const competitions = data.competitions || [];
+      const matches = competitions.filter(c => c.name?.toLowerCase().includes(query));
+      displayCompetitions(matches);
+      displayTeams([]);
+      displayPlayers([]);
+    } catch (e) {
+      console.error('Failed to search competitions:', e);
+      displayCompetitions([]);
+      displayTeams([]);
+      displayPlayers([]);
+    }
+  }
+
+  // 6) search button click (click event) - shows players, teams or competitions depending on context
+  async function handleSearchButtonClick(event) {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    // empty query -> show all competitions
+    if (!q) {
+      await loadCompetitions();
+      return;
+    }
+
+    // if a team is selected -> search within that team's squad
+    if (teamsSelect.value) {
+      await loadAndShowPlayersForTeam(teamsSelect.value);
+      return;
+    }
+
+    // if a competition is selected -> show matching teams and players across the competition
+    if (competitionsSelect.value) {
+      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
+      displayTeams(matchingTeams);
+      await searchAcrossCompetitionTeams(q);
+      return;
+    }
+
+    // otherwise search competitions by name
+    await searchCompetitions(q);
+  }
+
+  // --- Named event callbacks (each unique function for .addEventListener) ---
+
+  // 1) competition change (change event)
+  async function handleCompetitionChange(event) {
+    const competitionId = competitionsSelect.value;
+    await loadTeamsForCompetition(competitionId);
+  }
+
+  // 2) team change (change event) - distinct callback from competition change
+  async function handleTeamChange(event) {
     const teamId = teamsSelect.value;
     if (!teamId) {
       displayPlayers([]);
       return;
     }
     await loadAndShowPlayersForTeam(teamId);
-  });
+  }
 
-  // Dark/Light mode toggle button logic
-  toggleThemeBtn.addEventListener('click', () => setTheme(!document.body.classList.contains('dark-mode')));
+  // 3) search input (input event)
+  async function handleSearchInput(event) {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    // if a team is selected, search within that team's squad (cached or fetched)
+    if (teamsSelect.value) {
+      await loadAndShowPlayersForTeam(teamsSelect.value);
+      return;
+    }
+    // if no team selected but a competition is selected, search across that competition
+    if (competitionsSelect.value) {
+      if (!q) {
+        // nothing to search - clear players
+        displayPlayers([]);
+        return;
+      }
+      await searchAcrossCompetitionTeams(q);
+      return;
+    }
+    // otherwise nothing to search
+    displayPlayers([]);
+  }
+
+  // 4) position filter change (change event) - different callback
+  function handlePositionChange(event) {
+    if (teamsSelect.value) {
+      loadAndShowPlayersForTeam(teamsSelect.value);
+    }
+  }
+
+  // 5) theme toggle (click event)
+  function handleToggleTheme(event) {
+    setTheme(!document.body.classList.contains('dark-mode'));
+  }
+
+  // Dark/Light mode helper
   function setTheme(isDark) {
     document.body.classList.toggle('dark-mode', isDark);
     document.body.classList.toggle('light-mode', !isDark);
     toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
   }
   setTheme(false); // Default light mode
+
+  // Attach event listeners using .addEventListener (at least 3 distinct types: 'change', 'input', 'click')
+   competitionsSelect.addEventListener('change', handleCompetitionChange);
+   teamsSelect.addEventListener('change', handleTeamChange);
+   searchInput.addEventListener('input', debounce(handleSearchInput, SEARCH_DEBOUNCE_MS));
+   if (searchBtn) searchBtn.addEventListener('click', handleSearchButtonClick);
+   positionFilter.addEventListener('change', handlePositionChange);
+   toggleThemeBtn.addEventListener('click', handleToggleTheme);
 
   // Initialize app by loading competitions
   if (apiRequestsAllowed) {
