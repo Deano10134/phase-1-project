@@ -15,7 +15,8 @@
     <div id="search-container">
       <form id="searchForm" novalidate>
         <input type="text" id="searchInput" placeholder="Search players or teams..." />
-        <button id="searchBtn" type="submit">Search</button>
+        <!-- changed to type="button" to prevent form submit navigation -->
+        <button id="searchBtn" type="button" aria-label="Search">Search</button>
       </form>
     </div>
 
@@ -45,15 +46,17 @@
         <h2 id="matches-heading">Matches of the Day</h2>
         <div class="matches-controls">
           <span id="matchesDate" aria-live="polite"></span>
-          <button id="refreshMatchesBtn" type="button">Refresh</button>
+          <!-- changed id to match optional JS variable (todayMatchesBtn) and avoid duplicate naming -->
+          <button id="todayMatchesBtn" type="button">Refresh</button>
         </div>
       </div>
 
       <div id="matches-container">
         <!-- populated by JS: either match cards or a list -->
-        <ul id="matchesList" class="matches-list">
+        <!-- id changed to kebab-case to match JS: getElementById('matches-list') -->
+        <ul id="matches-list" class="matches-list">
           <!-- Example placeholder (remove when JS fills in) -->
-          <li class="match-placeholder">No matches loaded. Click Refresh to fetch today's matches.</li>
+          <li class="match-placeholder">No matches loaded. Click Refresh to fetch matches.</li>
         </ul>
       </div>
     </section>

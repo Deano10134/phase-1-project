@@ -76,25 +76,53 @@ document.addEventListener('DOMContentLoaded', () => {
       items.map(i => `<option value="${i[valueKey]}">${i[textKey] ?? ''}</option>`).join('');
   };
 
-  // Display competitions in UI section
+  // Helper: attempt various common fields for competition logos/emblems
+  function getCompetitionLogoUrl(c) {
+    if (!c) return '';
+    return c.emblemUrl || c.logo || c.area?.ensignUrl || c.crestUrl || c.ensignUrl || '';
+  }
+
+  // Helper: attempt various common fields for team crest/logo
+  function getTeamCrestUrl(t) {
+    if (!t) return '';
+    return t.crestUrl || t.crest || t.logo || '';
+  }
+
+  // Helper: find a team's crest by its name using cachedTeams (safe fallback)
+  function findTeamCrestByName(name) {
+    if (!name || !cachedTeams?.length) return '';
+    const team = cachedTeams.find(t => t.name === name);
+    return team ? getTeamCrestUrl(team) : '';
+  }
+
+  // Display competitions in UI section (with logos)
   function displayCompetitions(competitions) {
     const container = document.getElementById('competitions-list');
     if (!container) return;
     const items = normalizeItems(competitions);
-    container.innerHTML = `<h2>Competitions</h2>` + (items.map(c =>
-      `<div class="competition-card"><strong>${c.name}</strong></div>`
-    ).join('') || '<p>No competitions</p>');
+    container.innerHTML = `<h2>Competitions</h2>` + (items.map(c => {
+      const logo = getCompetitionLogoUrl(c);
+      const img = logo ? `<img src="${logo}" alt="${(c.name||'Competition')} logo" class="competition-logo" onerror="this.style.display='none'">` : '';
+      return `<div class="competition-card" data-competition-id="${c.id}">
+                ${img}
+                <strong>${c.name}</strong>
+              </div>`;
+    }).join('') || '<p>No competitions</p>');
   }
 
-  // Display teams in UI section
+  // Display teams in UI section (with crests)
   function displayTeams(teams) {
     const container = document.getElementById('teams-list');
     if (!container) return;
     const items = normalizeItems(teams);
-    container.innerHTML = `<h2>Teams</h2>` + (items.map(t =>
-      // include data-team-id so clicks can identify the team
-      `<div class="team-card" data-team-id="${t.id}"><strong>${t.name}</strong></div>`
-    ).join('') || '<p>No teams</p>');
+    container.innerHTML = `<h2>Teams</h2>` + (items.map(t => {
+      const crest = getTeamCrestUrl(t);
+      const img = crest ? `<img src="${crest}" alt="${(t.name||'Team')} crest" class="team-crest" onerror="this.style.display='none'">` : '';
+      return `<div class="team-card" data-team-id="${t.id}">
+                ${img}
+                <strong>${t.name}</strong>
+              </div>`;
+    }).join('') || '<p>No teams</p>');
   }
 
   // Display matches in UI section (matches of the day)
@@ -130,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }).join('');
   }
   
-  // Display players in UI section
+  // Display players in UI section (include team crest when available)
   function displayPlayers(players) {
     const container = document.getElementById('players-list');
     if (!container) return;
@@ -138,13 +166,16 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '<h2>Players</h2><p>No players found.</p>';
       return;
     }
-    container.innerHTML = `<h2>Players</h2>` + players.map(p =>
-      `<div class="player-card">
-         <strong>${p.name}</strong><br>
-         Team: ${p.team}<br>
-         Position: ${p.position ?? ''}
-       </div>`
-    ).join('');
+    container.innerHTML = `<h2>Players</h2>` + players.map(p => {
+      // try to display small crest for player's team when possible
+      const crestUrl = findTeamCrestByName(p.team);
+      const crestImg = crestUrl ? `<img src="${crestUrl}" alt="${p.team} crest" class="player-team-crest" onerror="this.style.display='none'"> ` : '';
+      return `<div class="player-card">
+               ${crestImg}<strong>${p.name}</strong><br>
+               Team: ${p.team}<br>
+               Position: ${p.position ?? ''}
+             </div>`;
+    }).join('');
   }
 
   // Fetch helper with proper headers for Football-Data.org
@@ -334,6 +365,36 @@ document.addEventListener('DOMContentLoaded', () => {
     await loadMatchesForDate(dateStr);
   }
 
+  // Load matches for the past weekend (most recent completed Saturday-Sunday)
+  async function loadMatchesForPastWeekend() {
+    const today = new Date();
+    // Find the most recent Sunday that is strictly before today.
+    // If today is Sunday (0) we go back one week so we get the previous completed weekend.
+    const daysBackToSunday = today.getDay() === 0 ? 7 : today.getDay();
+    const lastSunday = new Date(today);
+    lastSunday.setDate(today.getDate() - daysBackToSunday);
+    const lastSaturday = new Date(lastSunday);
+    lastSaturday.setDate(lastSunday.getDate() - 1);
+
+    const fmt = d => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    };
+
+    const dateFrom = fmt(lastSaturday);
+    const dateTo = fmt(lastSunday);
+    try {
+      const data = await fetchAPI(`/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
+      const matches = data.matches || [];
+      displayMatches(matches);
+    } catch (e) {
+      console.error('Failed to load past weekend matches:', e);
+      displayMatches([]);
+    }
+  }
+  
   // 6) search button click (click event) - shows players, teams or competitions depending on context
   async function handleSearchButtonClick(event) {
     const q = (searchInput.value || '').trim().toLowerCase();
@@ -447,7 +508,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize app by loading competitions and today's matches
   if (apiRequestsAllowed) {
     loadCompetitions();
-    loadMatchesForToday(); // show matches of the day
+    loadMatchesForPastWeekend(); // show matches from the past weekend
   } else {
     populateSelect(competitionsSelect, []);
     populateSelect(teamsSelect, []);
