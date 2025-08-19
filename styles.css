@@ -1,148 +1,224 @@
+/* Theme variables (set on body.light-mode / body.dark-mode for easy theming) */
+:root {
+  --bg: #f8f9fa;
+  --surface: #fff;
+  --surface-2: #fafafa;
+  --text: #222;
+  --muted: #6c757d;
+  --border: #e0e0e0;
+  --input-bg: #fff;
+  --input-border: #ccc;
+  --primary: #007bff;
+  --primary-700: #0056b3;
+  --shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+/* Light / Dark mode overrides */
+body.light-mode {
+  --bg: #fff;
+  --surface: #fff;
+  --surface-2: #fafafa;
+  --text: #222;
+  --muted: #6c757d;
+  --border: #e0e0e0;
+  --input-bg: #fff;
+  --input-border: #ccc;
+  --primary: #007bff;
+  --primary-700: #0056b3;
+}
+
+body.dark-mode {
+  --bg: #222;
+  --surface: #333;
+  --surface-2: #444;
+  --text: #fff;
+  --muted: #cfcfcf;
+  --border: #555;
+  --input-bg: #444;
+  --input-border: #555;
+  --primary: #4a90e2;
+  --primary-700: #2f6fb3;
+  --shadow: 0 2px 10px rgba(0,0,0,0.5);
+}
+
+/* Base */
+html, body {
+  height: 100%;
+}
 body {
   font-family: Arial, sans-serif;
-  margin: 2em;
-  background: #f8f9fa;
-  color: #222;
+  margin: 0;
+  padding: 2rem;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  line-height: 1.35;
 }
 
-body.light-mode {
-  background: #fff;
-  color: #222;
-}
-body.dark-mode {
-  background: #222;
-  color: #fff;
-}
-
-/* Make #app background adapt to theme */
-body.light-mode #app {
-  background: #fff;
-  color: #222;
-}
-body.dark-mode #app {
-  background: #333;
-  color: #fff;
-}
-
-/* Inputs, selects, buttons adapt to theme */
-body.light-mode input,
-body.light-mode select {
-  background: #fff;
-  color: #222;
-  border: 1px solid #ccc;
-}
-body.dark-mode input,
-body.dark-mode select {
-  background: #444;
-  color: #fff;
-  border: 1px solid #555;
-}
-
-body.light-mode button {
-  background: #007bff;
-  color: #fff;
-}
-body.dark-mode button {
-  background: #444;
-  color: #fff;
-  border: 1px solid #555;
-}
-body.dark-mode button:hover {
-  background: #222;
-}
-
+/* App container: centered, responsive, with gentle card look */
 #app {
-  max-width: 900px;
-  margin: auto;
-  background: #fff;
-  padding: 2em;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-
-  /* Make #app a grid container for header/search/results spacing */
+  max-width: 1100px;
+  margin: 0 auto;
+  background: var(--surface);
+  padding: 1.5rem;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
   display: grid;
   grid-template-rows: auto auto 1fr;
-  gap: 1.25rem;
+  gap: 1rem;
 }
 
+/* Header */
 h1 {
   text-align: center;
-  margin-bottom: 0;
+  margin: 0;
+  font-size: 1.5rem;
+  color: var(--text);
 }
 
-/* Search row becomes a grid */
+/* Search container: responsive, stacks on small screens */
 #search-container {
   display: grid;
   grid-template-columns: 1fr auto auto;
-  gap: 1em;
+  gap: 0.75rem;
   align-items: center;
-  justify-content: center;
-  margin-bottom: 0;
+  width: 100%;
+}
+
+/* On narrow screens stack controls vertically */
+@media (max-width: 700px) {
+  #search-container {
+    grid-template-columns: 1fr;
+  }
+
+  #search-container > button,
+  #search-container > select {
+    width: 100%;
+  }
 }
 
 /* Form controls baseline */
-input, select, button {
-  padding: 0.5em;
-  font-size: 1em;
-  border-radius: 4px;
-  border: 1px solid #ccc;
+input, select, button, textarea {
+  padding: 0.6rem 0.75rem;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  transition: box-shadow 0.15s, transform 0.06s;
 }
 
+/* Focus & accessibility */
+input:focus, select:focus, button:focus, textarea:focus {
+  outline: 3px solid rgba(0,123,255,0.15);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(0,123,255,0.08);
+}
+
+/* Buttons */
 button {
-  background: #007bff;
+  background: var(--primary);
   color: #fff;
-  border: none;
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: background 0.2s;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  transition: background 0.15s, transform 0.06s;
 }
+button:hover { background: var(--primary-700); transform: translateY(-1px); }
+button:active { transform: translateY(0); }
 
-button:hover {
-  background: #0056b3;
+/* Secondary / neutral button */
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
 }
+button.secondary:hover { background: rgba(0,0,0,0.05); }
 
+/* Results grid: responsive card columns */
 #results-container {
   margin-top: 0;
   display: grid;
   gap: 1rem;
-  /* responsive card grid: adapts to available width */
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
 }
 
-/* Cards now use CSS Grid for consistent alignment and optional action area */
+/* Card base using CSS grid for consistent layout */
 .player-card, .team-card {
   display: grid;
-  grid-template-columns: 48px 1fr auto;
+  grid-template-columns: 56px 1fr auto;
   grid-template-areas: "image content actions";
-  align-items: center;
   gap: 0.75rem;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  padding: 1em;
-  margin: 0; /* spacing handled by results grid gap */
-  background: #fafafa;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+  min-height: 72px;
 }
 
-/* If your markup uses specific elements, map them into the grid areas */
+/* On very small cards stack image above content */
+@media (max-width: 420px) {
+  .player-card, .team-card {
+    grid-template-columns: 48px 1fr;
+    grid-template-areas:
+      "image content"
+      "actions actions";
+    grid-auto-rows: auto;
+    gap: 0.5rem;
+  }
+}
+
+/* Images / crests */
 .player-card img,
-.team-card img {
+.team-card img,
+.competition-logo,
+.team-crest,
+.player-team-crest {
   grid-area: image;
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
+  width: 56px;
+  height: 56px;
   object-fit: contain;
   border-radius: 6px;
   background: transparent;
   display: inline-block;
-  margin: 0;
+  align-self: center;
 }
 
+/* Card body & actions */
 .player-card .card-body,
 .team-card .card-body {
   grid-area: content;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0; /* allow text truncation */
 }
 
-/* optional actions area (e.g., buttons, badges) */
+.player-card .card-title,
+.team-card .card-title {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-card .card-sub,
+.team-card .card-sub {
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* actions area aligns to the right */
 .player-card .card-actions,
 .team-card .card-actions {
   grid-area: actions;
@@ -152,30 +228,172 @@ button:hover {
   gap: 0.5rem;
 }
 
-/* Unified, fixed-size crests/logos for teams, competitions and player list */
-.competition-logo,
-.team-crest,
-.player-team-crest {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;       /* prevent image from growing/shrinking */
-  object-fit: contain;   /* preserve aspect ratio without distortion */
-  border-radius: 6px;
-  background: transparent;
-  display: inline-block;
-  margin-top: 0;
+/* Small badges / meta pills */
+.badge {
+  padding: 0.25rem 0.45rem;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.06);
+  color: var(--text);
+  border: 1px solid rgba(0,0,0,0.04);
 }
 
-/* Theme-aware card backgrounds */
+/* Theme-aware card backgrounds (kept thin) */
 body.light-mode .player-card,
 body.light-mode .team-card {
-  background: #fafafa;
-  color: #222;
-  border: 1px solid #e0e0e0;
+  background: var(--surface-2);
+  border-color: var(--border);
 }
 body.dark-mode .player-card,
 body.dark-mode .team-card {
-  background: #444;
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+/* Matches section improvements - keep existing layout & functionality but nicer cards */
+#matches-section {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+}
+
+/* Header layout: title left, controls right */
+.matches-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+.matches-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+/* Controls (date picker + refresh) */
+.matches-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.matches-controls #matchesDate {
+  font-size: 0.9rem;
+  color: var(--muted);
+  min-width: 6.5rem;
+  text-align: right;
+}
+
+/* Date input & refresh button sizing to match form controls */
+.matches-controls input[type="date"] {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+.matches-controls button {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.95rem;
+}
+
+/* Matches list: responsive grid of match cards */
+.matches-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+}
+
+/* Individual match card */
+.match-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.7rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  min-height: 64px;
+}
+
+/* Teams area (home vs away) */
+.match-card .teams {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.match-card .teams .team {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+.match-card .teams .team img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+/* Meta area (time, competition, score) */
+.match-card .meta {
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+/* Score badge to stand out */
+.match-card .score {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  background: var(--primary);
   color: #fff;
-  border: 1px solid #555;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+
+/* Placeholder / empty state */
+.match-placeholder {
+  padding: 1rem;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+}
+
+/* Small screens: stack meta under teams */
+@media (max-width: 420px) {
+  .match-card {
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+  .match-card .meta {
+    text-align: left;
+    align-items: flex-start;
+  }
+}
+
+/* Improve spacing for long pages on small screens */
+@media (max-width: 500px) {
+  body { padding: 1rem; }
+  #app { padding: 1rem; border-radius: 8px; }
 }
