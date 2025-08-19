@@ -5,7 +5,6 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 
-
 // Try loading .env from several places so the token is picked up regardless of where the process is started
 const candidates = [
   path.resolve(process.cwd(), '.env'),
@@ -33,7 +32,8 @@ if (loadedFiles.length) console.log('[proxy] dotenv loaded from:', loadedFiles);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const API_BASE = 'https://api.football-data.org/v4';
+// API base should point to the v4 root so forwarded paths (e.g. /teams/ID) resolve correctly
+const API_BASE = 'https://api.football-data.org/v4/';
 // accept either env var name and strip surrounding quotes if present
 const rawToken = (process.env.FOOTBALL_API_TOKEN || process.env.FOOTBALL_API_KEY || '').toString();
 const API_TOKEN = rawToken.replace(/^['"]|['"]$/g, '');
@@ -68,7 +68,7 @@ app.use('/api', async (req, res) => {
     }
 
     // forward the original path and query string to the real API
-    // Ensure we preserve the API_BASE path (e.g. /v4). If forwardPath begins with a leading slash,
+    // Ensure we preserve the API_BASE path (e.g. /v4/matches). If forwardPath begins with a leading slash,
     // new URL(forwardPath, API_BASE) will replace the base path. Normalize by removing leading slash
     // and guaranteeing API_BASE ends with a slash.
     const forwardPath = (req.url && req.url.length) ? req.url : '/';

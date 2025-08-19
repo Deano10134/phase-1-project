@@ -5,7 +5,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchBtn = document.getElementById('searchBtn');
   const positionFilter = document.getElementById('positionFilter');
   const toggleThemeBtn = document.getElementById('toggleThemeBtn');
-  
+  // optional button to refresh today's matches (if present in HTML)
+  const todayMatchesBtn = document.getElementById('todayMatchesBtn');
+
   // Caching & search helpers
   let cachedTeams = [];                // teams for the currently loaded competition
   const cachedSquads = new Map();      // teamId -> squad array
@@ -53,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
 
   // Utility to normalize arrays inside different object structures
-  const normalizeItems = (maybeArray, propNames = ['teams', 'competitions', 'items']) => {
+  const normalizeItems = (maybeArray, propNames = ['teams', 'competitions', 'items', 'matches']) => {
     if (!maybeArray) return [];
     if (Array.isArray(maybeArray)) return maybeArray;
     for (const p of propNames) {
@@ -90,10 +92,44 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!container) return;
     const items = normalizeItems(teams);
     container.innerHTML = `<h2>Teams</h2>` + (items.map(t =>
-      `<div class="team-card"><strong>${t.name}</strong></div>`
+      // include data-team-id so clicks can identify the team
+      `<div class="team-card" data-team-id="${t.id}"><strong>${t.name}</strong></div>`
     ).join('') || '<p>No teams</p>');
   }
 
+  // Display matches in UI section (matches of the day)
+  function displayMatches(matches) {
+    const container = document.getElementById('matches-list');
+    if (!container) return;
+    const items = normalizeItems(matches);
+    if (!items.length) {
+      container.innerHTML = '<h2>Matches</h2><p>No matches for the selected date.</p>';
+      return;
+    }
+    // format match display: competition, time, home vs away, score (if available)
+    const formatDateTime = (utcDate) => {
+      try {
+        const d = new Date(utcDate);
+        return d.toLocaleString();
+      } catch (e) {
+        return utcDate || '';
+      }
+    };
+    container.innerHTML = `<h2>Matches</h2>` + items.map(m => {
+      const comp = m.competition?.name || m.competition || '';
+      const time = formatDateTime(m.utcDate || m.date || '');
+      const home = m.homeTeam?.name || m.homeTeam || (m.homeTeamId ? `Team ${m.homeTeamId}` : '');
+      const away = m.awayTeam?.name || m.awayTeam || (m.awayTeamId ? `Team ${m.awayTeamId}` : '');
+      const score = (m.score && m.score.fullTime) ? `${m.score.fullTime.home ?? ''} - ${m.score.fullTime.away ?? ''}` : '';
+      return `<div class="match-card">
+                <strong>${home} vs ${away}</strong><br>
+                ${comp ? `Competition: ${comp}<br>` : ''}
+                Time: ${time}<br>
+                ${score ? `Score: ${score}` : ''}
+              </div>`;
+    }).join('');
+  }
+  
   // Display players in UI section
   function displayPlayers(players) {
     const container = document.getElementById('players-list');
@@ -270,6 +306,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Load matches for a specific date (YYYY-MM-DD)
+  async function loadMatchesForDate(dateStr) {
+    if (!dateStr) {
+      displayMatches([]);
+      return;
+    }
+    try {
+      // Football-Data API supports dateFrom & dateTo parameters
+      const data = await fetchAPI(`/matches?dateFrom=${dateStr}&dateTo=${dateStr}`);
+      const matches = data.matches || [];
+      displayMatches(matches);
+    } catch (e) {
+      console.error('Failed to load matches for date', dateStr, e);
+      displayMatches([]);
+    }
+  }
+
+  // Load matches for today
+  async function loadMatchesForToday() {
+    // use local date in YYYY-MM-DD
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    await loadMatchesForDate(dateStr);
+  }
+
   // 6) search button click (click event) - shows players, teams or competitions depending on context
   async function handleSearchButtonClick(event) {
     const q = (searchInput.value || '').trim().toLowerCase();
@@ -362,12 +426,28 @@ document.addEventListener('DOMContentLoaded', () => {
    teamsSelect.addEventListener('change', handleTeamChange);
    searchInput.addEventListener('input', debounce(handleSearchInput, SEARCH_DEBOUNCE_MS));
    if (searchBtn) searchBtn.addEventListener('click', handleSearchButtonClick);
+   // delegate clicks from the teams list to handleTeamCardClick
+   const teamsListContainer = document.getElementById('teams-list');
+   if (teamsListContainer) teamsListContainer.addEventListener('click', handleTeamCardClick);
    positionFilter.addEventListener('change', handlePositionChange);
    toggleThemeBtn.addEventListener('click', handleToggleTheme);
+   if (todayMatchesBtn) todayMatchesBtn.addEventListener('click', loadMatchesForToday);
 
-  // Initialize app by loading competitions
+  // 7) click on a team card in the teams list -> show that team's players
+  async function handleTeamCardClick(event) {
+    const card = event.target.closest('.team-card');
+    if (!card) return;
+    const teamId = card.getAttribute('data-team-id');
+    if (!teamId) return;
+    // keep the select in sync and load players
+    if (teamsSelect) teamsSelect.value = teamId;
+    await loadAndShowPlayersForTeam(teamId);
+  }
+
+  // Initialize app by loading competitions and today's matches
   if (apiRequestsAllowed) {
     loadCompetitions();
+    loadMatchesForToday(); // show matches of the day
   } else {
     populateSelect(competitionsSelect, []);
     populateSelect(teamsSelect, []);

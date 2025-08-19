@@ -1,24 +1,24 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Football Search App</title>
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body class="light-mode">
   <div id="app">
     <h1>Football Search App</h1>
     <p>Welcome to Dean's Football search app. This simple web allows you to search any football player, team or match in the world.</p>
     <p>The app has been developed as part of my Software Engineer Course to showcase my skills in JavaScript, HTML and CSS.</p>
-    
+
     <div id="search-container">
       <form id="searchForm" novalidate>
         <input type="text" id="searchInput" placeholder="Search players or teams..." />
         <button id="searchBtn" type="submit">Search</button>
       </form>
     </div>
-    
+
     <select id="positionFilter">
       <option value="">All Positions</option>
       <option value="Forward">Forward</option>
@@ -26,19 +26,38 @@
       <option value="Defender">Defender</option>
       <option value="Goalkeeper">Goalkeeper</option>
     </select>
-    
+
     <select id="competitions">
       <option value="">Select Competitions</option>
     </select>
-    
+
     <select id="teams">
       <option value="">Select Teams</option>
     </select>
-    
+
     <ul id="squad"></ul>
-    
+
     <button id="toggleThemeBtn">Switch to Dark Mode</button>
-    
+
+    <!-- Matches of the Day section -->
+    <section id="matches-section" aria-labelledby="matches-heading">
+      <div class="matches-header">
+        <h2 id="matches-heading">Matches of the Day</h2>
+        <div class="matches-controls">
+          <span id="matchesDate" aria-live="polite"></span>
+          <button id="refreshMatchesBtn" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div id="matches-container">
+        <!-- populated by JS: either match cards or a list -->
+        <ul id="matchesList" class="matches-list">
+          <!-- Example placeholder (remove when JS fills in) -->
+          <li class="match-placeholder">No matches loaded. Click Refresh to fetch today's matches.</li>
+        </ul>
+      </div>
+    </section>
+
     <!-- Results will be displayed here -->
     <div id="results-container">
       <div id="competitions-list"></div>
@@ -48,7 +67,7 @@
   </div>
 
   <script defer src="./src/index.js"></script>
-  
+
   <footer>
     <p>&copy; 2025 Dean's Football App.</p>
   </footer>
