@@ -40,26 +40,35 @@ The frontend attempts to find these images in common API response fields (exampl
 
 ## How to run (quick)
 
-1. Start the local proxy (if you have `server/` code):
-   - Configure API key in `server/.env` (copy `.env.example` if present).
-   - Install and run the server:
-     ```
-     cd server
-     npm install
-     npm run dev   # or `npm start`
-     ```
-2. Start or serve the frontend:
-   - If using a simple static server, from project root:
-     ```
-     npx serve .        # or python -m http.server 8000
-     ```
-   - Or use your preferred dev workflow (open the served URL on localhost).
+1. Create env files and configure API keys
+        - Copy `server/.env.example` to `server/.env` and set `PORT`, `EXTERNAL_API_KEY`, etc.
+        - If the frontend requires environment variables, create/update its `.env` as needed.
 
-3. Open the frontend in your browser at the served localhost URL (e.g., `http://localhost:3000` or the port your static server uses).
+2. Start the local proxy (if `server/` exists)
+        ```
+        cd server
+        npm installg
+        npm run dev   # or npm start
+        ```
+        The proxy should run on the configured `PORT` (commonly 3000) and forward requests to the external API.
 
-4. Create a `.env` file in `server/` (or copy `.env.example`) and set keys such as `PORT` and `EXTERNAL_API_KEY`.
+3. Serve the frontend
+        - From the project root:
+        ```
+        npx serve .        # or python -m http.server 8000
+        ```
+        - Or run your preferred frontend dev workflow. Ensure the frontend is served over http(s) (not `file://`).
 
-5. Use the search input, select competitions/teams, or click a team card to view players (photos/crests will show when available). Use the "Refresh" button in the Matches section to re-fetch matches.
+4. Open the app in your browser
+        - Visit the served URL (e.g., `http://localhost:3000` or the port used by your static server).
+
+5. Use the app
+        - Use the search input, select competitions/teams, or click a team card to view players (photos/crests appear when available).
+        - Use the "Refresh" button in Matches to re-fetch match data.
+
+Notes:
+- If you don't run the proxy, ensure the frontend is served from `http://localhost` so API requests can be made.
+- Update keys in `.env` any time they change.
 
 ## Notes
 
