@@ -46,6 +46,11 @@
         <h2 id="matches-heading">Matches of the Day</h2>
         <div class="matches-controls">
           <span id="matchesDate" aria-live="polite"></span>
+
+          <!-- Date filter input (added) -->
+          <label for="matchDate" class="visually-hidden">Filter matches by date</label>
+          <input id="matchDate" type="date" aria-label="Filter matches by date" />
+
           <!-- changed id to match optional JS variable (todayMatchesBtn) and avoid duplicate naming -->
           <button id="todayMatchesBtn" type="button">Refresh</button>
         </div>

@@ -6,86 +6,81 @@ body {
 }
 
 body.light-mode {
-    background: #fff;
-    color: #222;
+  background: #fff;
+  color: #222;
 }
 body.dark-mode {
-    background: #222;
-    color: #fff;
+  background: #222;
+  color: #fff;
 }
 
 /* Make #app background adapt to theme */
 body.light-mode #app {
-    background: #fff;
-    color: #222;
+  background: #fff;
+  color: #222;
 }
 body.dark-mode #app {
-    background: #333;
-    color: #fff;
+  background: #333;
+  color: #fff;
 }
 
 /* Inputs, selects, buttons adapt to theme */
 body.light-mode input,
 body.light-mode select {
-    background: #fff;
-    color: #222;
-    border: 1px solid #ccc;
+  background: #fff;
+  color: #222;
+  border: 1px solid #ccc;
 }
 body.dark-mode input,
 body.dark-mode select {
-    background: #444;
-    color: #fff;
-    border: 1px solid #555;
+  background: #444;
+  color: #fff;
+  border: 1px solid #555;
 }
 
 body.light-mode button {
-    background: #007bff;
-    color: #fff;
+  background: #007bff;
+  color: #fff;
 }
 body.dark-mode button {
-    background: #444;
-    color: #fff;
-    border: 1px solid #555;
+  background: #444;
+  color: #fff;
+  border: 1px solid #555;
 }
 body.dark-mode button:hover {
-    background: #222;
-}
-
-/* Cards adapt to theme */
-body.light-mode .player-card,
-body.light-mode .team-card {
-    background: #fafafa;
-    color: #222;
-    border: 1px solid #e0e0e0;
-}
-body.dark-mode .player-card,
-body.dark-mode .team-card {
-    background: #444;
-    color: #fff;
-    border: 1px solid #555;
+  background: #222;
 }
 
 #app {
-  max-width: 700px;
+  max-width: 900px;
   margin: auto;
   background: #fff;
   padding: 2em;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+
+  /* Make #app a grid container for header/search/results spacing */
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 1.25rem;
 }
 
 h1 {
   text-align: center;
-  margin-bottom: 1.5em;
+  margin-bottom: 0;
 }
 
+/* Search row becomes a grid */
 #search-container {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
   gap: 1em;
-  margin-bottom: 2em;
+  align-items: center;
   justify-content: center;
+  margin-bottom: 0;
 }
 
+/* Form controls baseline */
 input, select, button {
   padding: 0.5em;
   font-size: 1em;
@@ -106,21 +101,55 @@ button:hover {
 }
 
 #results-container {
-  margin-top: 2em;
+  margin-top: 0;
+  display: grid;
+  gap: 1rem;
+  /* responsive card grid: adapts to available width */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
-/* Replace/augment card layout so images align with text */
+/* Cards now use CSS Grid for consistent alignment and optional action area */
 .player-card, .team-card {
-  /* replaced previous block with flex layout for consistent image alignment */
-  display: flex;
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  grid-template-areas: "image content actions";
   align-items: center;
   gap: 0.75rem;
   border: 1px solid #e0e0e0;
   border-radius: 6px;
   padding: 1em;
-  margin-bottom: 1em;
+  margin: 0; /* spacing handled by results grid gap */
   background: #fafafa;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+
+/* If your markup uses specific elements, map them into the grid areas */
+.player-card img,
+.team-card img {
+  grid-area: image;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: transparent;
+  display: inline-block;
+  margin: 0;
+}
+
+.player-card .card-body,
+.team-card .card-body {
+  grid-area: content;
+}
+
+/* optional actions area (e.g., buttons, badges) */
+.player-card .card-actions,
+.team-card .card-actions {
+  grid-area: actions;
+  justify-self: end;
+  align-self: center;
+  display: flex;
+  gap: 0.5rem;
 }
 
 /* Unified, fixed-size crests/logos for teams, competitions and player list */
@@ -135,4 +164,18 @@ button:hover {
   background: transparent;
   display: inline-block;
   margin-top: 0;
+}
+
+/* Theme-aware card backgrounds */
+body.light-mode .player-card,
+body.light-mode .team-card {
+  background: #fafafa;
+  color: #222;
+  border: 1px solid #e0e0e0;
+}
+body.dark-mode .player-card,
+body.dark-mode .team-card {
+  background: #444;
+  color: #fff;
+  border: 1px solid #555;
 }

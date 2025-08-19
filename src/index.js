@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const toggleThemeBtn = document.getElementById('toggleThemeBtn');
   // optional button to refresh today's matches (if present in HTML)
   const todayMatchesBtn = document.getElementById('todayMatchesBtn');
+  const matchDateInput = document.getElementById('matchDate'); // date input to filter matches by single date
 
   // Caching & search helpers
   let cachedTeams = [];                // teams for the currently loaded competition
@@ -552,6 +553,21 @@ document.addEventListener('DOMContentLoaded', () => {
    if (teamsListContainer) teamsListContainer.addEventListener('click', handleTeamCardClick);
    positionFilter.addEventListener('change', handlePositionChange);
    toggleThemeBtn.addEventListener('click', handleToggleTheme);
+   // date filter for matches: single-day filter input with id="matchDate"
+   if (matchDateInput) {
+     // restrict to not select future dates by default
+     const todayIso = new Date().toISOString().slice(0, 10);
+     matchDateInput.max = todayIso;
+     // when the date changes, load matches for that date; empty -> show past weekend
+     matchDateInput.addEventListener('change', async (e) => {
+       const date = (e.target.value || '').trim();
+       if (date) {
+         await loadMatchesForDate(date);
+       } else {
+         await loadMatchesForPastWeekend();
+       }
+     });
+   }
    // attach refresh handler: re-fetch the last matches range (or today if none recorded)
    if (todayMatchesBtn) todayMatchesBtn.addEventListener('click', async (e) => {
      // disable button briefly to prevent double clicks and give visual feedback if desired
