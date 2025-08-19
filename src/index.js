@@ -167,13 +167,18 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     container.innerHTML = `<h2>Players</h2>` + players.map(p => {
+      const photoUrl = getPlayerPhotoUrl(p);
+      const photoImg = photoUrl ? `<img src="${photoUrl}" alt="${p.name} photo" class="player-photo" onerror="this.style.display='none'">` : '';
       // try to display small crest for player's team when possible
       const crestUrl = findTeamCrestByName(p.team);
       const crestImg = crestUrl ? `<img src="${crestUrl}" alt="${p.team} crest" class="player-team-crest" onerror="this.style.display='none'"> ` : '';
       return `<div class="player-card">
-               ${crestImg}<strong>${p.name}</strong><br>
-               Team: ${p.team}<br>
-               Position: ${p.position ?? ''}
+               ${photoImg}
+               <div class="player-info">
+                 <strong>${p.name}</strong><br>
+                 Team: ${crestImg}${p.team}<br>
+                 Position: ${p.position ?? ''}
+               </div>
              </div>`;
     }).join('');
   }
