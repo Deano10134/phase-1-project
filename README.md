@@ -2,72 +2,72 @@
 
 The Football Search App allows users to search for football teams, players, and match information. It provides an intuitive interface for exploring football data and statistics for competitions around the world.
 
-## Features
+## What's new
 
-- Search for teams and players
-- View detailed match information
-- Responsive and user-friendly UI
+This project now displays images in the UI:
 
-## Code Overview
+- Competition logos/emblems are shown in the Competitions list.
+- Team crests are shown next to each team in the Teams list and next to players.
+- Player photos/headshots are shown in the Players list (when available).
 
-- **Frontend:** Built with HTML, CSS, and JavaScript.
-- **API Integration:** Fetches football data from a public API (e.g., [API-Football](https://api.football-data.org/v4/competitions)).
-- **State Management:** Utilises local state or Redux for managing search results and user interactions.
-- **Server (server/):** Lightweight Node/Express service used to proxy requests, store server-side configuration (API keys), perform simple transformations or caching, and avoid exposing secrets from the frontend.
+The frontend attempts to find these images in common API response fields (examples include: `emblemUrl`, `logo`, `crestUrl` for competitions and teams; `photo`, `photoUrl`, `imageUrl`, `headshot`, `avatar`, `picture` for players). If an image URL is invalid the image element is hidden to preserve layout.
 
-### Server folder (server/)
-The `server/` folder contains the backend portion of the app. Typical responsibilities and contents:
+## UI / Styling notes
 
-- Purpose
-    - Proxy calls to external football APIs so API keys are not exposed in the browser.
-    - Normalize or filter API responses for the frontend.
-    - Add simple caching, rate-limiting, or request aggregation if needed.
+- Images use a unified fixed size to keep the layout consistent:
+  - CSS classes: `.competition-logo`, `.team-crest`, `.player-photo`, `.player-team-crest`.
+  - Images are sized and constrained with `width`, `height`, `object-fit: contain` and a fixed flex basis so they don't stretch layout.
+- Player and team list items use a flex layout:
+  - `.team-card` and `.player-card` align image + text horizontally for a compact list view.
+  - Player details are wrapped in `.player-info` to keep text aligned.
 
-- Common structure
-    - server/
-        - package.json
-        - .env.example (copy to `.env` and fill required values)
-        - src/ or lib/
-            - index.js or app.js (Express app entry)
-            - routes/ (API route definitions)
-            - controllers/ (request handlers)
-            - middleware/ (logging, CORS, error handling)
-            - utils/ (API client, caching helpers)
-        - README.md (optional notes for the server)
+## Code overview (changes)
 
-- Typical environment variables
-    - PORT — port the server listens on (e.g., 4000)
-    - EXTERNAL_API_KEY — API key for the external football data provider
-    - EXTERNAL_API_BASE_URL — base URL for the external API
-    - NODE_ENV — development/production
-    - (Any other third-party credentials or configuration)
+- Frontend
+  - `src/index.js`:
+    - Added helpers to extract logo/crest/photo URLs and render them in `displayCompetitions`, `displayTeams`, and `displayPlayers`.
+    - Caches teams and squads (`cachedTeams`, `cachedSquads`) to reduce repeated API calls when searching teams/players.
+    - Keeps selects and list UI in sync; clicking a team card selects the team and loads its squad.
+  - `styles.css`:
+    - Unified crest/photo sizing and improved list card layout with flexbox.
 
-- How it is used by the frontend
-    - Frontend sends requests to the server (e.g., http://localhost:4000/api/teams?q=arsenal).
-    - The server forwards the request to the external API, attaches the key, and returns formatted JSON to the frontend.
+## API / Proxy
 
-## How to Use
+- To avoid exposing API keys and to handle CORS, the app uses a small local proxy during development.
+  - Default proxy base used by the frontend: `http://localhost:3000/api`
+  - Start the proxy (if provided in `server/`) and point the frontend to it. The proxy should forward requests to the external football API and attach API keys server-side.
+  - If you don't run the proxy, make sure you serve the frontend from `http://localhost` (not `file://`) to allow API requests.
 
-1. **Clone the repository:**
-        ```bash
-        git clone https://github.com/yourusername/football-search-app.git
-        cd football-search-app
-        ```
+## How to run (quick)
 
-2. **Install dependencies (frontend):**
-        ```bash
-        npm install
-        ```
+1. Start the local proxy (if you have `server/` code):
+   - Configure API key in `server/.env` (copy `.env.example` if present).
+   - Install and run the server:
+     ```
+     cd server
+     npm install
+     npm run dev   # or `npm start`
+     ```
+2. Start or serve the frontend:
+   - If using a simple static server, from project root:
+     ```
+     npx serve .        # or python -m http.server 8000
+     ```
+   - Or use your preferred dev workflow (open the served URL on localhost).
 
-3. **Start the frontend development server:**
-        ```bash
-        npm start
-        ```
+3. Open the frontend in your browser at the served localhost URL (e.g., `http://localhost:3000` or the port your static server uses).
 
-4. **Server (if present):**
-        - Install server dependencies and run:
-            ```bash
-            cd server
+4. Use the search input, select competitions/teams, or click a team card to view players (photos/crests will show when available). Use the "Refresh" button in the Matches section to re-fetch matches.
+
+## Notes
+
+- The app hides images that fail to load to avoid broken layout.
+- The set of image fields probed by the app is heuristic — some APIs return different fields. If your data source uses other names, adapt the helper functions in `src/index.js`.
+- Dark/Light mode toggle is available via the "Switch to Dark Mode" button; styles adapt for images and content.
+
+## License
+
+This project is licensed under the MIT License.
             npm install
             # development with auto-reload
             npm run dev
