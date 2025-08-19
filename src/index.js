@@ -98,6 +98,22 @@ document.addEventListener('DOMContentLoaded', () => {
     return team ? getTeamCrestUrl(team) : '';
   }
 
+  // Helper: attempt common fields for player photos/headshots
+  function getPlayerPhotoUrl(player) {
+    if (!player) return '';
+    // common field names that might contain a photo URL
+    const candidates = ['photo', 'photoUrl', 'picture', 'pictureUrl', 'profilePicture', 'thumbnail', 'headshot', 'image', 'img', 'url'];
+    for (const k of candidates) {
+      const v = player[k];
+      if (typeof v === 'string' && v.trim()) return v;
+      if (v && typeof v === 'object' && typeof v.url === 'string' && v.url.trim()) return v.url;
+    }
+    // some APIs return arrays of images
+    if (Array.isArray(player.photos) && player.photos[0]?.url) return player.photos[0].url;
+    if (player.image && typeof player.image === 'object' && player.image.url) return player.image.url;
+    return '';
+  }
+  
   // Display competitions in UI section (with logos)
   function displayCompetitions(competitions) {
     const container = document.getElementById('competitions-list');
@@ -187,28 +203,49 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Fetch helper with proper headers for Football-Data.org
+  // small helper to sleep
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
   async function fetchAPI(path, options = {}) {
     if (!apiRequestsAllowed) {
       const msg = 'API requests are disabled: serve the app from http://localhost or start the local proxy at http://localhost:3000.';
       console.error(msg);
       throw new Error(msg);
     }
+
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     const opts = {
       ...options,
       headers: { ...headers, ...options.headers }
     };
-    let res;
-    try {
-      res = await fetch(url, opts);
-    } catch (networkErr) {
-      const msg = `Network error when requesting ${url}: ${networkErr.message}`;
-      console.error(msg);
-      throw new Error(msg);
-    }
 
-    const text = await res.text();
-    if (!res.ok) {
+    const maxRetries = 3;
+    let attempt = 0;
+    while (true) {
+      let res;
+      try {
+        res = await fetch(url, opts);
+      } catch (networkErr) {
+        const msg = `Network error when requesting ${url}: ${networkErr.message}`;
+        console.error(msg);
+        throw new Error(msg);
+      }
+
+      const text = await res.text();
+      if (res.ok) {
+        try { return JSON.parse(text); } catch (_) { return text; }
+      }
+
+      // Handle rate limiting (429): respect Retry-After header if present, otherwise exponential backoff
+      if (res.status === 429 && attempt < maxRetries) {
+        attempt++;
+        const ra = res.headers.get('retry-after');
+        const waitMs = ra ? (Number(ra) * 1000) : (Math.pow(2, attempt) * 500);
+        console.warn(`[fetchAPI] 429 received for ${url}. retry ${attempt}/${maxRetries} after ${waitMs}ms`);
+        await sleep(waitMs);
+        continue;
+      }
+
       let parsed = text;
       try { parsed = JSON.parse(text); } catch (_) {}
       const msg = `API request failed (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`;
@@ -218,13 +255,7 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('[fetchAPI] ', msg);
       throw err;
     }
-
-    try {
-      return JSON.parse(text);
-    } catch (_) {
-      return text;
-    }
-  }
+   }
 
   // Load competitions from API and populate select + display list
   async function loadCompetitions() {
