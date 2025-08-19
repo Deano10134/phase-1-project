@@ -57,30 +57,15 @@ The frontend attempts to find these images in common API response fields (exampl
 
 3. Open the frontend in your browser at the served localhost URL (e.g., `http://localhost:3000` or the port your static server uses).
 
-4. Use the search input, select competitions/teams, or click a team card to view players (photos/crests will show when available). Use the "Refresh" button in the Matches section to re-fetch matches.
+4. Create a `.env` file in `server/` (or copy `.env.example`) and set keys such as `PORT` and `EXTERNAL_API_KEY`.
+
+5. Use the search input, select competitions/teams, or click a team card to view players (photos/crests will show when available). Use the "Refresh" button in the Matches section to re-fetch matches.
 
 ## Notes
 
 - The app hides images that fail to load to avoid broken layout.
 - The set of image fields probed by the app is heuristic — some APIs return different fields. If your data source uses other names, adapt the helper functions in `src/index.js`.
 - Dark/Light mode toggle is available via the "Switch to Dark Mode" button; styles adapt for images and content.
-
-## License
-
-This project is licensed under the MIT License.
-            npm install
-            # development with auto-reload
-            npm run dev
-            # or production
-            npm start
-            ```
-        - Create a `.env` file in `server/` (or copy `.env.example`) and set keys such as `PORT` and `EXTERNAL_API_KEY`.
-
-5. **Open your browser:**  
-        Navigate to `http://localhost:3000` to use the app (adjust if your frontend runs on a different port).
-
-6. **Search:**  
-        Enter a team or player name in the search bar to view results.
 
 ## Customization
 
