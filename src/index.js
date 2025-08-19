@@ -13,6 +13,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const cachedSquads = new Map();      // teamId -> squad array
   const SEARCH_DEBOUNCE_MS = 300;
 
+  // remember the last matches date range we requested so the refresh button can re-run it
+  let lastMatchesParams = null; // { dateFrom, dateTo } or null
+
   const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
     let id = null;
     return (...args) => {
@@ -349,6 +352,8 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     try {
+      // record last requested single-day range so refresh can re-run it
+      lastMatchesParams = { dateFrom: dateStr, dateTo: dateStr };
       // Football-Data API supports dateFrom & dateTo parameters
       const data = await fetchAPI(`/matches?dateFrom=${dateStr}&dateTo=${dateStr}`);
       const matches = data.matches || [];
@@ -391,6 +396,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const dateFrom = fmt(lastSaturday);
     const dateTo = fmt(lastSunday);
     try {
+      // record last requested weekend range so refresh can re-run it
+      lastMatchesParams = { dateFrom, dateTo };
       const data = await fetchAPI(`/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
       const matches = data.matches || [];
       displayMatches(matches);
@@ -400,6 +407,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
+  // Refresh the last shown matches range (or fallback to today)
+  async function refreshMatches() {
+    if (lastMatchesParams && lastMatchesParams.dateFrom && lastMatchesParams.dateTo) {
+      try {
+        const data = await fetchAPI(`/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
+        const matches = data.matches || [];
+        displayMatches(matches);
+      } catch (e) {
+        console.error('Failed to refresh matches range:', lastMatchesParams, e);
+        displayMatches([]);
+      }
+      return;
+    }
+    // no previous range recorded — fallback to today's matches
+    await loadMatchesForToday();
+  }
+
   // 6) search button click (click event) - shows players, teams or competitions depending on context
   async function handleSearchButtonClick(event) {
     const q = (searchInput.value || '').trim().toLowerCase();
@@ -497,7 +521,17 @@ document.addEventListener('DOMContentLoaded', () => {
    if (teamsListContainer) teamsListContainer.addEventListener('click', handleTeamCardClick);
    positionFilter.addEventListener('change', handlePositionChange);
    toggleThemeBtn.addEventListener('click', handleToggleTheme);
-   if (todayMatchesBtn) todayMatchesBtn.addEventListener('click', loadMatchesForToday);
+   // attach refresh handler: re-fetch the last matches range (or today if none recorded)
+   if (todayMatchesBtn) todayMatchesBtn.addEventListener('click', async (e) => {
+     // disable button briefly to prevent double clicks and give visual feedback if desired
+     todayMatchesBtn.disabled = true;
+     try {
+       await refreshMatches();
+     } finally {
+       // re-enable after short delay to avoid rapid repeated requests
+       setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
+     }
+   });
 
   // 7) click on a team card in the teams list -> show that team's players
   async function handleTeamCardClick(event) {
