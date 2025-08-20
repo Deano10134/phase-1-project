@@ -118,7 +118,7 @@ app.use('/api', async (req, res) => {
     res.status(response.status).send(body);
 
   } catch (error) {
-    console.error('Proxy error:', error && error.stack ? error.stack : error);
+    console.error('[proxy] error:', error && error.stack ? error.stack : error);
     res.status(500).json({ error: 'Internal server error', detail: String(error) });
   }
 });
