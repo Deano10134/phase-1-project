@@ -1,152 +1,109 @@
 document.addEventListener('DOMContentLoaded', () => {
+  // DOM elements
   const competitionsSelect = document.getElementById('competitions');
   const teamsSelect = document.getElementById('teams');
   const searchInput = document.getElementById('searchInput');
   const searchBtn = document.getElementById('searchBtn');
   const positionFilter = document.getElementById('positionFilter');
   const toggleThemeBtn = document.getElementById('toggleThemeBtn');
-  // optional button to refresh today's matches (if present in HTML)
   const todayMatchesBtn = document.getElementById('todayMatchesBtn');
-  const matchDateInput = document.getElementById('matchDate'); // date input to filter matches by single date
+  const matchDateInput = document.getElementById('matchDate');
 
-  // Caching & search helpers
-  let cachedTeams = [];                // teams for the currently loaded competition
-  const cachedSquads = new Map();      // teamId -> squad array
+  // Cache and constants
+  let cachedTeams = [];
+  const cachedSquads = new Map();
   const SEARCH_DEBOUNCE_MS = 300;
+  let lastMatchesParams = null;
 
-  // remember the last matches date range we requested so the refresh button can re-run it
-  let lastMatchesParams = null; // { dateFrom, dateTo } or null
-
-  const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
-    let id = null;
-    return (...args) => {
-      if (id) clearTimeout(id);
-      id = setTimeout(() => fn(...args), ms);
-    };
-  };
-
-  // Use a local proxy during development to avoid CORS issues.
-  // Start your proxy server (server/index.js) and keep it running at http://localhost:3000
-  // The proxy will forward requests to the real Football-Data API using the server-side token.
+  // API config and checks
   const API_BASE = 'http://localhost:3000/api';
-  const API_TOKEN = ''; // token not used by frontend when using proxy (kept empty)
-
-  // If API_BASE points to the local proxy we consider API requests allowed
-  // even when the page is opened via file://. Otherwise require serving from localhost.
+  const API_TOKEN = '';
   const isFileProtocol = window.location.protocol === 'file:';
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  const usingLocalProxy = API_BASE.startsWith('http://localhost') || API_BASE.startsWith('http://127.0.0.1');
+  const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const usingLocalProxy = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
   const apiRequestsAllowed = usingLocalProxy || (!isFileProtocol && isLocalhost);
 
   if (!apiRequestsAllowed) {
-    // Insert a visible banner with instructions
     const banner = document.createElement('div');
     banner.id = 'cors-warning';
     banner.style.cssText = 'background:#ffefc2;border:1px solid #f0c36d;padding:12px;margin:8px;font-family:system-ui,Arial,sans-serif;';
     banner.innerHTML = `
-      <strong>CORS / Origin mismatch</strong> — serve this app from http://localhost or run the local proxy at http://localhost:3000.<br>
+      <strong>CORS / Origin mismatch</strong> — serve from http://localhost or run proxy at http://localhost:3000.<br>
       Examples: <code>python -m http.server 8000</code> or <code>npx serve .</code><br>
-      If using the proxy, start the proxy server (server/index.js) and reload.
+      Start proxy server and reload.
     `;
     document.body.insertBefore(banner, document.body.firstChild);
   }
 
-  // Build fetch headers; only include X-Auth-Token when present to avoid sending blank headers.
-  const headers = (() => {
-    const h = { Accept: 'application/json' };
-    if (API_TOKEN) h['X-Auth-Token'] = API_TOKEN;
-    return h;
-  })();
+  const headers = { Accept: 'application/json', ...(API_TOKEN && { 'X-Auth-Token': API_TOKEN }) };
 
-  // Utility to normalize arrays inside different object structures
-  const normalizeItems = (maybeArray, propNames = ['teams', 'competitions', 'items', 'matches']) => {
-    if (!maybeArray) return [];
-    if (Array.isArray(maybeArray)) return maybeArray;
-    for (const p of propNames) {
-      if (Array.isArray(maybeArray[p])) return maybeArray[p];
-    }
+  // Utilities
+  const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
+    let timeoutId;
+    return (...args) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => fn(...args), ms);
+    };
+  };
+
+  const normalizeItems = (data, keys = ['teams', 'competitions', 'items', 'matches']) => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    for (const key of keys) if (Array.isArray(data[key])) return data[key];
     return [];
   };
 
-  // Populate a select element with options from API data
-  const populateSelect = (select, itemsOrObj, valueKey = 'id', textKey = 'name') => {
+  const populateSelect = (select, data, valueKey = 'id', textKey = 'name') => {
     if (!select) return;
-    const items = normalizeItems(itemsOrObj);
-    if (!items.length) {
-      select.innerHTML = `<option value="">No items</option>`;
-      return;
-    }
-    select.innerHTML = `<option value="">Select</option>` +
-      items.map(i => `<option value="${i[valueKey]}">${i[textKey] ?? ''}</option>`).join('');
+    const items = normalizeItems(data);
+    select.innerHTML = items.length
+      ? `<option value="">Select</option>${items.map(i => `<option value="${i[valueKey]}">${i[textKey] || ''}</option>`).join('')}`
+      : '<option value="">No items</option>';
   };
 
-  // Helper: attempt various common fields for competition logos/emblems
-  function getCompetitionLogoUrl(c) {
-    if (!c) return '';
-    return c.emblemUrl || c.logo || c.area?.ensignUrl || c.crestUrl || c.ensignUrl || '';
-  }
-
-  // Helper: attempt various common fields for team crest/logo
-  function getTeamCrestUrl(t) {
-    if (!t) return '';
-    return t.crestUrl || t.crest || t.logo || '';
-  }
-
-  // Helper: find a team's crest by its name using cachedTeams (safe fallback)
-  function findTeamCrestByName(name) {
-    if (!name || !cachedTeams?.length) return '';
-    const team = cachedTeams.find(t => t.name === name);
-    return team ? getTeamCrestUrl(team) : '';
-  }
-
-  // Helper: attempt common fields for player photos/headshots
-  function getPlayerPhotoUrl(player) {
-    if (!player) return '';
-    // common field names that might contain a photo URL
-    const candidates = ['photo', 'photoUrl', 'picture', 'pictureUrl', 'profilePicture', 'thumbnail', 'headshot', 'image', 'img', 'url'];
-    for (const k of candidates) {
-      const v = player[k];
+  // Extract URLs for logos/crests/photos
+  const getFirstValidUrl = (obj, candidates) => {
+    if (!obj) return '';
+    for (const key of candidates) {
+      const v = obj[key];
       if (typeof v === 'string' && v.trim()) return v;
       if (v && typeof v === 'object' && typeof v.url === 'string' && v.url.trim()) return v.url;
     }
-    // some APIs return arrays of images
-    if (Array.isArray(player.photos) && player.photos[0]?.url) return player.photos[0].url;
-    if (player.image && typeof player.image === 'object' && player.image.url) return player.image.url;
+    if (Array.isArray(obj.photos) && obj.photos[0]?.url) return obj.photos[0].url;
     return '';
-  }
-  
-  // Display competitions in UI section (with logos)
-  function displayCompetitions(competitions) {
-    const container = document.getElementById('competitions-list');
-    if (!container) return;
-    const items = normalizeItems(competitions);
-    container.innerHTML = `<h2>Competitions</h2>` + (items.map(c => {
-      const logo = getCompetitionLogoUrl(c);
-      const img = logo ? `<img src="${logo}" alt="${(c.name||'Competition')} logo" class="competition-logo" onerror="this.style.display='none'">` : '';
-      return `<div class="competition-card" data-competition-id="${c.id}">
-                ${img}
-                <strong>${c.name}</strong>
-              </div>`;
-    }).join('') || '<p>No competitions</p>');
-  }
+  };
 
-  // Display teams in UI section (with crests)
-  function displayTeams(teams) {
-    const container = document.getElementById('teams-list');
-    if (!container) return;
-    const items = normalizeItems(teams);
-    container.innerHTML = `<h2>Teams</h2>` + (items.map(t => {
-      const crest = getTeamCrestUrl(t);
-      const img = crest ? `<img src="${crest}" alt="${(t.name||'Team')} crest" class="team-crest" onerror="this.style.display='none'">` : '';
-      return `<div class="team-card" data-team-id="${t.id}">
-                ${img}
-                <strong>${t.name}</strong>
-              </div>`;
-    }).join('') || '<p>No teams</p>');
-  }
+  const getCompetitionLogoUrl = c => getFirstValidUrl(c, ['emblemUrl', 'logo', 'crestUrl', 'ensignUrl']);
+  const getTeamCrestUrl = t => getFirstValidUrl(t, ['crestUrl', 'crest', 'logo']);
+  const getPlayerPhotoUrl = p => getFirstValidUrl(p, ['photo', 'photoUrl', 'picture', 'pictureUrl', 'profilePicture', 'thumbnail', 'headshot', 'image', 'img', 'url']);
 
-  // Display matches in UI section (matches of the day)
-  function displayMatches(matches) {
+  // Display functions (competitions, teams, matches, players)
+  const renderCards = (containerId, items, options) => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const normalized = normalizeItems(items);
+    if (!normalized.length) {
+      container.innerHTML = `<h2>${options.title}</h2><p>No ${options.title.toLowerCase()} found.</p>`;
+      return;
+    }
+    container.innerHTML = `<h2>${options.title}</h2>` + normalized.map(i => {
+      const imgUrl = options.getImageUrl(i);
+      const img = imgUrl ? `<img src="${imgUrl}" alt="${options.alt || options.title} image" class="${options.imgClass}" onerror="this.style.display='none'">` : '';
+      return `
+        <div class="${options.cardClass}" ${options.dataAttr ? `data-${options.dataAttr}="${i[options.valueKey]}"` : ''}>
+          ${img}
+          <strong>${i[options.textKey] || ''}</strong>
+        </div>`;
+    }).join('');
+  };
+
+  const displayCompetitions = competitions =>
+    renderCards('competitions-list', competitions, { title: 'Competitions', getImageUrl: getCompetitionLogoUrl, imgClass: 'competition-logo', cardClass: 'competition-card', valueKey: 'id', textKey: 'name', dataAttr: 'competition-id' });
+
+  const displayTeams = teams =>
+    renderCards('teams-list', teams, { title: 'Teams', getImageUrl: getTeamCrestUrl, imgClass: 'team-crest', cardClass: 'team-card', valueKey: 'id', textKey: 'name', dataAttr: 'team-id' });
+
+  const displayMatches = matches => {
     const container = document.getElementById('matches-list');
     if (!container) return;
     const items = normalizeItems(matches);
@@ -154,149 +111,121 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '<h2>Matches</h2><p>No matches for the selected date.</p>';
       return;
     }
-    // format match display: competition, time, home vs away, score (if available)
-    const formatDateTime = (utcDate) => {
+    const formatDateTime = d => {
       try {
-        const d = new Date(utcDate);
-        return d.toLocaleString();
-      } catch (e) {
-        return utcDate || '';
-      }
+        return new Date(d).toLocaleString();
+      } catch { return d || ''; }
     };
-    container.innerHTML = `<h2>Matches</h2>` + items.map(m => {
+    container.innerHTML = '<h2>Matches</h2>' + items.map(m => {
       const comp = m.competition?.name || m.competition || '';
-      const time = formatDateTime(m.utcDate || m.date || '');
-      const home = m.homeTeam?.name || m.homeTeam || (m.homeTeamId ? `Team ${m.homeTeamId}` : '');
-      const away = m.awayTeam?.name || m.awayTeam || (m.awayTeamId ? `Team ${m.awayTeamId}` : '');
-      const score = (m.score && m.score.fullTime) ? `${m.score.fullTime.home ?? ''} - ${m.score.fullTime.away ?? ''}` : '';
-      return `<div class="match-card">
-                <strong>${home} vs ${away}</strong><br>
-                ${comp ? `Competition: ${comp}<br>` : ''}
-                Time: ${time}<br>
-                ${score ? `Score: ${score}` : ''}
-              </div>`;
+      const time = formatDateTime(m.utcDate || m.date);
+      const home = m.homeTeam?.name || `Team ${m.homeTeamId || ''}`;
+      const away = m.awayTeam?.name || `Team ${m.awayTeamId || ''}`;
+      const score = m.score?.fullTime ? `${m.score.fullTime.home ?? ''} - ${m.score.fullTime.away ?? ''}` : '';
+      return `
+        <div class="match-card">
+          <strong>${home} vs ${away}</strong><br>
+          ${comp ? `Competition: ${comp}<br>` : ''}
+          Time: ${time}<br>
+          ${score ? `Score: ${score}` : ''}
+        </div>`;
     }).join('');
-  }
-  
-  // Display players in UI section (include team crest when available)
-  function displayPlayers(players) {
+  };
+
+  const displayPlayers = players => {
     const container = document.getElementById('players-list');
     if (!container) return;
     if (!players.length) {
       container.innerHTML = '<h2>Players</h2><p>No players found.</p>';
       return;
     }
-    container.innerHTML = `<h2>Players</h2>` + players.map(p => {
-      const photoUrl = getPlayerPhotoUrl(p);
-      const photoImg = photoUrl ? `<img src="${photoUrl}" alt="${p.name} photo" class="player-photo" onerror="this.style.display='none'">` : '';
-      // try to display small crest for player's team when possible
-      const crestUrl = findTeamCrestByName(p.team);
-      const crestImg = crestUrl ? `<img src="${crestUrl}" alt="${p.team} crest" class="player-team-crest" onerror="this.style.display='none'"> ` : '';
-      return `<div class="player-card">
-               ${photoImg}
-               <div class="player-info">
-                 <strong>${p.name}</strong><br>
-                 Team: ${crestImg}${p.team}<br>
-                 Position: ${p.position ?? ''}
-               </div>
-             </div>`;
+    container.innerHTML = '<h2>Players</h2>' + players.map(p => {
+      const photo = getPlayerPhotoUrl(p);
+      const photoImg = photo ? `<img src="${photo}" alt="${p.name} photo" class="player-photo" onerror="this.style.display='none'">` : '';
+      const crest = cachedTeams.find(t => t.name === p.team);
+      const crestImgUrl = crest ? getTeamCrestUrl(crest) : '';
+      const crestImg = crestImgUrl ? `<img src="${crestImgUrl}" alt="${p.team} crest" class="player-team-crest" onerror="this.style.display='none'"> ` : '';
+      return `
+        <div class="player-card">
+          ${photoImg}
+          <div class="player-info">
+            <strong>${p.name}</strong><br>
+            Team: ${crestImg}${p.team || ''}<br>
+            Position: ${p.position || ''}
+          </div>
+        </div>`;
     }).join('');
-  }
+  };
 
-  // Fetch helper with proper headers for Football-Data.org
-  // small helper to sleep
-  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
+  // API fetch helper with retry on 429
   async function fetchAPI(path, options = {}) {
-    if (!apiRequestsAllowed) {
-      const msg = 'API requests are disabled: serve the app from http://localhost or start the local proxy at http://localhost:3000.';
-      console.error(msg);
-      throw new Error(msg);
-    }
+    if (!apiRequestsAllowed) throw new Error('API requests are disabled: serve from localhost or start proxy.');
 
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
-    const opts = {
-      ...options,
-      headers: { ...headers, ...options.headers }
-    };
-
+    const opts = { ...options, headers: { ...headers, ...options.headers } };
     const maxRetries = 3;
     let attempt = 0;
+
     while (true) {
-      let res;
       try {
-        res = await fetch(url, opts);
-      } catch (networkErr) {
-        const msg = `Network error when requesting ${url}: ${networkErr.message}`;
-        console.error(msg);
-        throw new Error(msg);
+        const res = await fetch(url, opts);
+        const text = await res.text();
+        if (res.ok) return JSON.parseSafe ? JSON.parseSafe(text) : JSON.parse(text);
+        if (res.status === 429 && attempt < maxRetries) {
+          attempt++;
+          const ra = res.headers.get('retry-after');
+          const waitMs = ra ? Number(ra) * 1000 : (2 ** attempt) * 500;
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+        let parsedData = text;
+        try { parsedData = JSON.parse(text); } catch {}
+        throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsedData === 'string' ? parsedData : JSON.stringify(parsedData)}`);
+      } catch (err) {
+        if (attempt < maxRetries) {
+          attempt++;
+          await new Promise(r => setTimeout(r, 500 * attempt));
+          continue;
+        }
+        throw err;
       }
-
-      const text = await res.text();
-      if (res.ok) {
-        try { return JSON.parse(text); } catch (_) { return text; }
-      }
-
-      // Handle rate limiting (429): respect Retry-After header if present, otherwise exponential backoff
-      if (res.status === 429 && attempt < maxRetries) {
-        attempt++;
-        const ra = res.headers.get('retry-after');
-        const waitMs = ra ? (Number(ra) * 1000) : (Math.pow(2, attempt) * 500);
-        console.warn(`[fetchAPI] 429 received for ${url}. retry ${attempt}/${maxRetries} after ${waitMs}ms`);
-        await sleep(waitMs);
-        continue;
-      }
-
-      let parsed = text;
-      try { parsed = JSON.parse(text); } catch (_) {}
-      const msg = `API request failed (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`;
-      const err = new Error(msg);
-      err.status = res.status;
-      err.body = parsed;
-      console.error('[fetchAPI] ', msg);
-      throw err;
     }
-   }
+  }
 
-  // Load competitions from API and populate select + display list
+  // Loaders and search handlers
+
   async function loadCompetitions() {
     try {
-      const competitionsData = await fetchAPI('/competitions');
-      const competitions = competitionsData.competitions || [];
-      populateSelect(competitionsSelect, competitions, 'id', 'name');
-      displayCompetitions(competitions);
-    } catch (e) {
-      console.error('Error loading competitions:', e);
+      const data = await fetchAPI('/competitions');
+      const comps = data.competitions || [];
+      populateSelect(competitionsSelect, comps);
+      displayCompetitions(comps);
+    } catch {
       populateSelect(competitionsSelect, []);
       displayCompetitions([]);
     }
   }
 
-  // Load teams based on selected competition, populate select and display list
-  async function loadTeamsForCompetition(competitionId) {
-    if (!competitionId) {
+  async function loadTeamsForCompetition(compId) {
+    if (!compId) {
       populateSelect(teamsSelect, []);
       displayTeams([]);
       displayPlayers([]);
       return;
     }
     try {
-      const teamsData = await fetchAPI(`/competitions/${competitionId}/teams`);
-      const teams = teamsData.teams || [];
-      // cache teams for global search
-      cachedTeams = teams;
+      const data = await fetchAPI(`/competitions/${compId}/teams`);
+      cachedTeams = data.teams || [];
       cachedSquads.clear();
-      populateSelect(teamsSelect, teams, 'id', 'name');
-      displayTeams(teams);
-      if (teams.length > 0) {
-        teamsSelect.value = teams[0].id;
-        // load players for the first team by id
-        await loadAndShowPlayersForTeam(teams[0].id);
+      populateSelect(teamsSelect, cachedTeams);
+      displayTeams(cachedTeams);
+      if (cachedTeams.length) {
+        teamsSelect.value = cachedTeams[0].id;
+        await loadAndShowPlayersForTeam(cachedTeams[0].id);
       } else {
         displayPlayers([]);
       }
-    } catch (e) {
-      console.error('Failed to load teams:', e);
+    } catch {
       cachedTeams = [];
       cachedSquads.clear();
       populateSelect(teamsSelect, []);
@@ -305,296 +234,218 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Load and display players (squad) for a team with optional filters
   async function loadAndShowPlayersForTeam(teamId) {
-    if (!teamId) return;
+    if (!teamId) return displayPlayers([]);
     try {
-      const teamData = await fetchAPI(`/teams/${teamId}`);
-      const squad = teamData.squad || [];
-      // cache squad for this team to avoid refetching during searches
-      cachedSquads.set(teamId, squad);
-      const search = searchInput.value.toLowerCase();
-      const position = positionFilter.value;
-
+      let squad = cachedSquads.get(teamId);
+      if (!squad) {
+        const teamData = await fetchAPI(`/teams/${teamId}`);
+        squad = teamData.squad || [];
+        cachedSquads.set(teamId, squad);
+      }
       let filtered = squad;
+      const search = searchInput.value.trim().toLowerCase();
+      const position = positionFilter.value;
       if (search) filtered = filtered.filter(p => p.name?.toLowerCase().includes(search));
       if (position) filtered = filtered.filter(p => p.position === position);
-
-      const teamName = teamData.name || (teamsSelect.selectedOptions[0]?.text ?? '');
-      const players = filtered.map(p => ({ ...p, team: teamName }));
-      displayPlayers(players);
-    } catch (e) {
-      console.error('Failed to load team players:', e);
+      const teamName = cachedTeams.find(t => t.id == teamId)?.name || '';
+      displayPlayers(filtered.map(p => ({ ...p, team: teamName })));
+    } catch {
       displayPlayers([]);
     }
   }
 
-  // Search across all teams in the selected competition (fetch squads as needed)
   async function searchAcrossCompetitionTeams(searchTerm) {
-    const compId = competitionsSelect.value;
-    if (!compId) return displayPlayers([]);
-    if (!cachedTeams?.length) {
-      // ensure teams are loaded (this will populate cachedTeams)
-      await loadTeamsForCompetition(compId);
-    }
-    const results = [];
-    for (const team of cachedTeams) {
-      const teamId = team.id;
-      let squad = cachedSquads.get(teamId);
-      if (!squad) {
-        try {
-          const teamData = await fetchAPI(`/teams/${teamId}`);
-          squad = teamData.squad || [];
-          cachedSquads.set(teamId, squad);
-        } catch (e) {
-          console.error('Failed to load squad for team', teamId, e);
-          continue;
+    if (!competitionsSelect.value) return displayPlayers([]);
+    if (!cachedTeams.length) await loadTeamsForCompetition(competitionsSelect.value);
+
+    try {
+      // fetch squads (if needed) in parallel and annotate players with team name
+      const squadsPromises = cachedTeams.map(async team => {
+        let squad = cachedSquads.get(team.id);
+        if (!squad) {
+          try {
+            const teamData = await fetchAPI(`/teams/${team.id}`);
+            squad = teamData.squad || [];
+            cachedSquads.set(team.id, squad);
+          } catch {
+            squad = [];
+          }
         }
-      }
-      for (const p of squad) {
-        if (p.name && p.name.toLowerCase().includes(searchTerm)) {
-          results.push({ ...p, team: team.name || '' });
-        }
-      }
+        return squad.map(p => ({ ...p, team: team.name }));
+      });
+
+      const squadsArray = await Promise.all(squadsPromises); // array of arrays
+      const allPlayers = squadsArray.flat(); // flatten to single array
+      const results = allPlayers.filter(p => p.name?.toLowerCase().includes(searchTerm));
+      displayPlayers(results);
+    } catch {
+      displayPlayers([]);
     }
-    displayPlayers(results);
   }
 
-  // Search competitions by name and display matches
   async function searchCompetitions(query) {
     try {
       const data = await fetchAPI('/competitions');
-      const competitions = data.competitions || [];
-      const matches = competitions.filter(c => c.name?.toLowerCase().includes(query));
-      displayCompetitions(matches);
+      const matching = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(query));
+      displayCompetitions(matching);
       displayTeams([]);
       displayPlayers([]);
-    } catch (e) {
-      console.error('Failed to search competitions:', e);
+    } catch {
       displayCompetitions([]);
       displayTeams([]);
       displayPlayers([]);
     }
   }
 
-  // Load matches for a specific date (YYYY-MM-DD)
-  async function loadMatchesForDate(dateStr) {
-    if (!dateStr) {
-      displayMatches([]);
-      return;
-    }
+  async function loadMatchesForDate(date) {
+    if (!date) return displayMatches([]);
     try {
-      // record last requested single-day range so refresh can re-run it
-      lastMatchesParams = { dateFrom: dateStr, dateTo: dateStr };
-      // Football-Data API supports dateFrom & dateTo parameters
-      const data = await fetchAPI(`/matches?dateFrom=${dateStr}&dateTo=${dateStr}`);
-      const matches = data.matches || [];
-      displayMatches(matches);
-    } catch (e) {
-      console.error('Failed to load matches for date', dateStr, e);
+      lastMatchesParams = { dateFrom: date, dateTo: date };
+      const data = await fetchAPI(`/matches?dateFrom=${date}&dateTo=${date}`);
+      displayMatches(data.matches || []);
+    } catch {
       displayMatches([]);
     }
   }
 
-  // Load matches for today
   async function loadMatchesForToday() {
-    // use local date in YYYY-MM-DD
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const dateStr = `${yyyy}-${mm}-${dd}`;
-    await loadMatchesForDate(dateStr);
+    const today = new Date().toISOString().slice(0, 10);
+    await loadMatchesForDate(today);
   }
 
-  // Load matches for the past weekend (most recent completed Saturday-Sunday)
   async function loadMatchesForPastWeekend() {
     const today = new Date();
-    // Find the most recent Sunday that is strictly before today.
-    // If today is Sunday (0) we go back one week so we get the previous completed weekend.
     const daysBackToSunday = today.getDay() === 0 ? 7 : today.getDay();
     const lastSunday = new Date(today);
     lastSunday.setDate(today.getDate() - daysBackToSunday);
     const lastSaturday = new Date(lastSunday);
     lastSaturday.setDate(lastSunday.getDate() - 1);
-
-    const fmt = d => {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${dd}`;
-    };
-
-    const dateFrom = fmt(lastSaturday);
-    const dateTo = fmt(lastSunday);
+    const fmt = d => d.toISOString().slice(0, 10);
+    lastMatchesParams = { dateFrom: fmt(lastSaturday), dateTo: fmt(lastSunday) };
     try {
-      // record last requested weekend range so refresh can re-run it
-      lastMatchesParams = { dateFrom, dateTo };
-      const data = await fetchAPI(`/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
-      const matches = data.matches || [];
-      displayMatches(matches);
-    } catch (e) {
-      console.error('Failed to load past weekend matches:', e);
+      const data = await fetchAPI(`/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
+      displayMatches(data.matches || []);
+    } catch {
       displayMatches([]);
     }
   }
-  
-  // Refresh the last shown matches range (or fallback to today)
+
   async function refreshMatches() {
-    if (lastMatchesParams && lastMatchesParams.dateFrom && lastMatchesParams.dateTo) {
+    if (lastMatchesParams) {
       try {
         const data = await fetchAPI(`/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
-        const matches = data.matches || [];
-        displayMatches(matches);
-      } catch (e) {
-        console.error('Failed to refresh matches range:', lastMatchesParams, e);
+        displayMatches(data.matches || []);
+        return;
+      } catch {
         displayMatches([]);
       }
-      return;
     }
-    // no previous range recorded — fallback to today's matches
     await loadMatchesForToday();
   }
 
-  // 6) search button click (click event) - shows players, teams or competitions depending on context
-  async function handleSearchButtonClick(event) {
-    const q = (searchInput.value || '').trim().toLowerCase();
-    // empty query -> show all competitions
-    if (!q) {
-      await loadCompetitions();
-      return;
-    }
+  // Event Handlers
+  async function handleCompetitionChange() {
+    await loadTeamsForCompetition(competitionsSelect.value);
+  }
 
-    // if a team is selected -> search within that team's squad
+  async function handleTeamChange() {
+    if (!teamsSelect.value) return displayPlayers([]);
+    await loadAndShowPlayersForTeam(teamsSelect.value);
+  }
+
+  async function handleSearchInput() {
+    const q = searchInput.value.trim().toLowerCase();
     if (teamsSelect.value) {
       await loadAndShowPlayersForTeam(teamsSelect.value);
       return;
     }
+    if (competitionsSelect.value) {
+      if (!q) return displayPlayers([]);
+      await searchAcrossCompetitionTeams(q);
+      return;
+    }
+    displayPlayers([]);
+  }
 
-    // if a competition is selected -> show matching teams and players across the competition
+  function handlePositionChange() {
+    if (teamsSelect.value) loadAndShowPlayersForTeam(teamsSelect.value);
+  }
+
+  function handleToggleTheme() {
+    const isDark = !document.body.classList.contains('dark-mode');
+    setTheme(isDark);
+  }
+
+  function setTheme(isDark) {
+    document.body.classList.toggle('dark-mode', isDark);
+    document.body.classList.toggle('light-mode', !isDark);
+    toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
+  }
+  
+  setTheme(false); // Default light mode
+
+  async function handleSearchButtonClick() {
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q) {
+      await loadCompetitions();
+      return;
+    }
+    if (teamsSelect.value) {
+      await loadAndShowPlayersForTeam(teamsSelect.value);
+      return;
+    }
     if (competitionsSelect.value) {
       const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
       displayTeams(matchingTeams);
       await searchAcrossCompetitionTeams(q);
       return;
     }
-
-    // otherwise search competitions by name
     await searchCompetitions(q);
   }
 
-  // --- Named event callbacks (each unique function for .addEventListener) ---
-
-  // 1) competition change (change event)
-  async function handleCompetitionChange(event) {
-    const competitionId = competitionsSelect.value;
-    await loadTeamsForCompetition(competitionId);
-  }
-
-  // 2) team change (change event) - distinct callback from competition change
-  async function handleTeamChange(event) {
-    const teamId = teamsSelect.value;
-    if (!teamId) {
-      displayPlayers([]);
-      return;
-    }
-    await loadAndShowPlayersForTeam(teamId);
-  }
-
-  // 3) search input (input event)
-  async function handleSearchInput(event) {
-    const q = (searchInput.value || '').trim().toLowerCase();
-    // if a team is selected, search within that team's squad (cached or fetched)
-    if (teamsSelect.value) {
-      await loadAndShowPlayersForTeam(teamsSelect.value);
-      return;
-    }
-    // if no team selected but a competition is selected, search across that competition
-    if (competitionsSelect.value) {
-      if (!q) {
-        // nothing to search - clear players
-        displayPlayers([]);
-        return;
-      }
-      await searchAcrossCompetitionTeams(q);
-      return;
-    }
-    // otherwise nothing to search
-    displayPlayers([]);
-  }
-
-  // 4) position filter change (change event) - different callback
-  function handlePositionChange(event) {
-    if (teamsSelect.value) {
-      loadAndShowPlayersForTeam(teamsSelect.value);
-    }
-  }
-
-  // 5) theme toggle (click event)
-  function handleToggleTheme(event) {
-    setTheme(!document.body.classList.contains('dark-mode'));
-  }
-
-  // Dark/Light mode helper
-  function setTheme(isDark) {
-    document.body.classList.toggle('dark-mode', isDark);
-    document.body.classList.toggle('light-mode', !isDark);
-    toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
-  }
-  setTheme(false); // Default light mode
-
-  // Attach event listeners using .addEventListener (at least 3 distinct types: 'change', 'input', 'click')
-   competitionsSelect.addEventListener('change', handleCompetitionChange);
-   teamsSelect.addEventListener('change', handleTeamChange);
-   searchInput.addEventListener('input', debounce(handleSearchInput, SEARCH_DEBOUNCE_MS));
-   if (searchBtn) searchBtn.addEventListener('click', handleSearchButtonClick);
-   // delegate clicks from the teams list to handleTeamCardClick
-   const teamsListContainer = document.getElementById('teams-list');
-   if (teamsListContainer) teamsListContainer.addEventListener('click', handleTeamCardClick);
-   positionFilter.addEventListener('change', handlePositionChange);
-   toggleThemeBtn.addEventListener('click', handleToggleTheme);
-   // date filter for matches: single-day filter input with id="matchDate"
-   if (matchDateInput) {
-     // restrict to not select future dates by default
-     const todayIso = new Date().toISOString().slice(0, 10);
-     matchDateInput.max = todayIso;
-     // when the date changes, load matches for that date; empty -> show past weekend
-     matchDateInput.addEventListener('change', async (e) => {
-       const date = (e.target.value || '').trim();
-       if (date) {
-         await loadMatchesForDate(date);
-       } else {
-         await loadMatchesForPastWeekend();
-       }
-     });
-   }
-   // attach refresh handler: re-fetch the last matches range (or today if none recorded)
-   if (todayMatchesBtn) todayMatchesBtn.addEventListener('click', async (e) => {
-     // disable button briefly to prevent double clicks and give visual feedback if desired
-     todayMatchesBtn.disabled = true;
-     try {
-       await refreshMatches();
-     } finally {
-       // re-enable after short delay to avoid rapid repeated requests
-       setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
-     }
-   });
-
-  // 7) click on a team card in the teams list -> show that team's players
   async function handleTeamCardClick(event) {
     const card = event.target.closest('.team-card');
     if (!card) return;
     const teamId = card.getAttribute('data-team-id');
     if (!teamId) return;
-    // keep the select in sync and load players
-    if (teamsSelect) teamsSelect.value = teamId;
+    teamsSelect.value = teamId;
     await loadAndShowPlayersForTeam(teamId);
   }
 
-  // Initialize app by loading competitions and today's matches
+  // Attach listeners
+  competitionsSelect?.addEventListener('change', handleCompetitionChange);
+  teamsSelect?.addEventListener('change', handleTeamChange);
+  searchInput?.addEventListener('input', debounce(handleSearchInput, SEARCH_DEBOUNCE_MS));
+  searchBtn?.addEventListener('click', handleSearchButtonClick);
+  document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
+  positionFilter?.addEventListener('change', handlePositionChange);
+  toggleThemeBtn?.addEventListener('click', handleToggleTheme);
+
+  if (matchDateInput) {
+    matchDateInput.max = new Date().toISOString().slice(0, 10);
+    matchDateInput.addEventListener('change', async e => {
+      const date = e.target.value.trim();
+      if (date) await loadMatchesForDate(date);
+      else await loadMatchesForPastWeekend();
+    });
+  }
+
+  if (todayMatchesBtn) {
+    todayMatchesBtn.addEventListener('click', async () => {
+      todayMatchesBtn.disabled = true;
+      try {
+        await refreshMatches();
+      } finally {
+        setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
+      }
+    });
+  }
+
+  // Initialization
   if (apiRequestsAllowed) {
     loadCompetitions();
-    loadMatchesForPastWeekend(); // show matches from the past weekend
+    loadMatchesForPastWeekend();
   } else {
     populateSelect(competitionsSelect, []);
     populateSelect(teamsSelect, []);
