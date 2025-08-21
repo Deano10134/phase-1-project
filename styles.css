@@ -377,16 +377,16 @@ body.dark-mode .team-card {
 }
 
 /* Small screens: stack meta under teams */
-@media (max-width: 420px) {
-  .match-card {
-    grid-template-columns: 1fr;
-    gap: 0.4rem;
+@media (max-width: 500px) {
+  .player-card, .team-card, .match-card {
+    padding: 0.75rem;
+    font-size: 0.9rem;
   }
-  .match-card .meta {
-    text-align: left;
-    align-items: flex-start;
+  #search-container {
+    gap: 0.5rem;
   }
 }
+
 
 /* Improve spacing for long pages on small screens */
 @media (max-width: 500px) {
