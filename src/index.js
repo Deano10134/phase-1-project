@@ -77,7 +77,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const getCompetitionLogoUrl = c => getFirstValidUrl(c, ['emblemUrl', 'logo', 'crestUrl', 'ensignUrl']);
   const getTeamCrestUrl = t => getFirstValidUrl(t, ['crestUrl', 'crest', 'logo']);
-  const getPlayerPhotoUrl = p => getFirstValidUrl(p, ['photo', 'photoUrl', 'picture', 'pictureUrl', 'profilePicture', 'thumbnail', 'headshot', 'image', 'img', 'url']);
+  // players removed: no player photos needed
+
+  // Clear players area helper (replaces previous displayPlayers usage)
+  const clearPlayers = () => {
+    const container = document.getElementById('players-list');
+    if (!container) return;
+    container.innerHTML = '';
+  };
+  
+  // concurrency helper (limits parallel requests if needed)
+  async function asyncPool(poolLimit, array, iteratorFn) {
+    const ret = [];
+    const executing = [];
+    for (const item of array) {
+      const p = Promise.resolve().then(() => iteratorFn(item));
+      ret.push(p);
+
+      if (poolLimit <= array.length) {
+        const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+        executing.push(e);
+        if (executing.length >= poolLimit) {
+          await Promise.race(executing);
+        }
+      }
+    }
+    return Promise.all(ret);
+  }
 
   // Display functions (competitions, teams, matches, players)
   const renderCards = (containerId, items, options) => {
@@ -130,31 +156,6 @@ document.addEventListener('DOMContentLoaded', () => {
           ${comp ? `Competition: ${comp}<br>` : ''}
           Time: ${time}<br>
           ${score ? `Score: ${score}` : ''}
-        </div>`;
-    }).join('');
-  };
-
-  const displayPlayers = players => {
-    const container = document.getElementById('players-list');
-    if (!container) return;
-    if (!players.length) {
-      container.innerHTML = '<h2>Players</h2><p>No players found.</p>';
-      return;
-    }
-    container.innerHTML = '<h2>Players</h2>' + players.map(p => {
-      const photo = getPlayerPhotoUrl(p);
-      const photoImg = photo ? `<img src="${photo}" alt="${p.name} photo" class="player-photo" onerror="this.style.display='none'">` : '';
-      const crest = cachedTeams.find(t => t.name === p.team);
-      const crestImgUrl = crest ? getTeamCrestUrl(crest) : '';
-      const crestImg = crestImgUrl ? `<img src="${crestImgUrl}" alt="${p.team} crest" class="player-team-crest" onerror="this.style.display='none'"> ` : '';
-      return `
-        <div class="player-card">
-          ${photoImg}
-          <div class="player-info">
-            <strong>${p.name}</strong><br>
-            Team: ${crestImg}${p.team || ''}<br>
-            Position: ${p.position || ''}
-          </div>
         </div>`;
     }).join('');
   };
@@ -212,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!compId) {
       populateSelect(teamsSelect, []);
       displayTeams([]);
-      displayPlayers([]);
+      clearPlayers();
       return;
     }
     try {
@@ -223,66 +224,16 @@ document.addEventListener('DOMContentLoaded', () => {
       displayTeams(cachedTeams);
       if (cachedTeams.length) {
         teamsSelect.value = cachedTeams[0].id;
-        await loadAndShowPlayersForTeam(cachedTeams[0].id);
+        // players removed: do not auto-load squad to avoid extra API requests
       } else {
-        displayPlayers([]);
+        clearPlayers();
       }
     } catch {
       cachedTeams = [];
       cachedSquads.clear();
       populateSelect(teamsSelect, []);
       displayTeams([]);
-      displayPlayers([]);
-    }
-  }
-
-  async function loadAndShowPlayersForTeam(teamId) {
-    if (!teamId) return displayPlayers([]);
-    try {
-      let squad = cachedSquads.get(teamId);
-      if (!squad) {
-        const teamData = await fetchAPI(`/teams/${teamId}`);
-        squad = teamData.squad || [];
-        cachedSquads.set(teamId, squad);
-      }
-      let filtered = squad;
-      const search = searchInput.value.trim().toLowerCase();
-      const position = positionFilter.value;
-      if (search) filtered = filtered.filter(p => p.name?.toLowerCase().includes(search));
-      if (position) filtered = filtered.filter(p => p.position === position);
-      const teamName = cachedTeams.find(t => t.id == teamId)?.name || '';
-      displayPlayers(filtered.map(p => ({ ...p, team: teamName })));
-    } catch {
-      displayPlayers([]);
-    }
-  }
-
-  async function searchAcrossCompetitionTeams(searchTerm) {
-    if (!competitionsSelect.value) return displayPlayers([]);
-    if (!cachedTeams.length) await loadTeamsForCompetition(competitionsSelect.value);
-
-    try {
-      // fetch squads (if needed) in parallel and annotate players with team name
-      const squadsPromises = cachedTeams.map(async team => {
-        let squad = cachedSquads.get(team.id);
-        if (!squad) {
-          try {
-            const teamData = await fetchAPI(`/teams/${team.id}`);
-            squad = teamData.squad || [];
-            cachedSquads.set(team.id, squad);
-          } catch {
-            squad = [];
-          }
-        }
-        return squad.map(p => ({ ...p, team: team.name }));
-      });
-
-      const squadsArray = await Promise.all(squadsPromises); // array of arrays
-      const allPlayers = squadsArray.flat(); // flatten to single array
-      const results = allPlayers.filter(p => p.name?.toLowerCase().includes(searchTerm));
-      displayPlayers(results);
-    } catch {
-      displayPlayers([]);
+      clearPlayers();
     }
   }
 
@@ -292,11 +243,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const matching = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(query));
       displayCompetitions(matching);
       displayTeams([]);
-      displayPlayers([]);
+      clearPlayers();
     } catch {
       displayCompetitions([]);
       displayTeams([]);
-      displayPlayers([]);
+      clearPlayers();
     }
   }
 
@@ -352,26 +303,32 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function handleTeamChange() {
-    if (!teamsSelect.value) return displayPlayers([]);
-    await loadAndShowPlayersForTeam(teamsSelect.value);
+    // players removed — selecting a team will just set the select value and clear players area
+    if (!teamsSelect.value) {
+      clearPlayers();
+      return;
+    }
+    clearPlayers();
   }
 
   async function handleSearchInput() {
     const q = searchInput.value.trim().toLowerCase();
-    if (teamsSelect.value) {
-      await loadAndShowPlayersForTeam(teamsSelect.value);
-      return;
-    }
+    // If a competition is selected, filter teams client-side
     if (competitionsSelect.value) {
-      if (!q) return displayPlayers([]);
-      await searchAcrossCompetitionTeams(q);
+      if (!q) {
+        displayTeams(cachedTeams);
+        return;
+      }
+      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
+      displayTeams(matchingTeams);
       return;
     }
-    displayPlayers([]);
-  }
-
-  function handlePositionChange() {
-    if (teamsSelect.value) loadAndShowPlayersForTeam(teamsSelect.value);
+    // Otherwise, search competitions
+    if (!q) {
+      await loadCompetitions();
+      return;
+    }
+    await searchCompetitions(q);
   }
 
   function handleToggleTheme() {
@@ -422,7 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return;
       }
-      await searchAcrossCompetitionTeams(q);
+      // players removed: team-specific search handled by team card click
       return;
     }
     await searchCompetitions(q);
@@ -434,7 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const teamId = card.getAttribute('data-team-id');
     if (!teamId) return;
     teamsSelect.value = teamId;
-    await loadAndShowPlayersForTeam(teamId);
+    // players removed: team card click will not load players
   }
   // Attach listeners
   competitionsSelect?.addEventListener('change', handleCompetitionChange);
@@ -444,8 +401,8 @@ document.addEventListener('DOMContentLoaded', () => {
   searchInput?.addEventListener('input', debouncedSearchInputHandler);
   searchBtn?.addEventListener('click', handleSearchButtonClick);
   document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
-  positionFilter?.addEventListener('change', handlePositionChange);
-  toggleThemeBtn?.addEventListener('click', handleToggleTheme);
+  // positionFilter listener removed (player UI removed)
+
   if (matchDateInput) {
     if (!matchDateInput.max) {
       matchDateInput.max = new Date().toISOString().slice(0, 10);
@@ -466,6 +423,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
       }
     });
+  }
   if (apiRequestsAllowed) {
     (async () => {
       try {
@@ -473,6 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch {
         populateSelect(competitionsSelect, []);
         displayCompetitions([]);
+        clearPlayers();
       }
       try {
         await loadMatchesForPastWeekend();
@@ -481,6 +440,5 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     })();
   }
-}
 });
 
