@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const cachedSquads = new Map();
   const SEARCH_DEBOUNCE_MS = 300;
   let lastMatchesParams = null;
+  const TEAM_MATCHES_CACHE_TTL_MS = 60_000;
+  const teamMatchesCache = new Map(); // key: teamId, val: { data, expiresAt }
+  const inFlightTeamMatches = new Map(); // key: teamId, val: Promise
 
   // API config and checks
   const API_BASE = 'http://localhost:3000/api';
@@ -385,6 +388,22 @@ document.addEventListener('DOMContentLoaded', () => {
     await searchCompetitions(q);
   }
 
+  async function getTeamMatches(teamId) {
+    const now = Date.now();
+    const cached = teamMatchesCache.get(teamId);
+    if (cached && cached.expiresAt > now) return cached.data;
+    const inflight = inFlightTeamMatches.get(teamId);
+    if (inflight) return inflight;
+    const p = (async () => {
+      const data = await fetchAPI(`/teams/${teamId}/matches`);
+      const matches = Array.isArray(data) ? data : (data.matches || []);
+      teamMatchesCache.set(teamId, { data: matches, expiresAt: now + TEAM_MATCHES_CACHE_TTL_MS });
+      return matches;
+    })().finally(() => inFlightTeamMatches.delete(teamId));
+    inFlightTeamMatches.set(teamId, p);
+    return p;
+  }
+
   async function handleTeamCardClick(event) {
     const card = event.target.closest('.team-card');
     if (!card) return;
@@ -395,10 +414,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Load and show matches for the clicked team
     try {
-      // football-data style endpoint: /teams/{id}/matches
-      const data = await fetchAPI(`/teams/${teamId}/matches`);
-      // some proxies return { matches: [...] } others return the array directly
-      const matches = Array.isArray(data) ? data : (data.matches || []);
+      const matches = await getTeamMatches(teamId);
       displayMatches(matches);
       const matchesEl = document.getElementById('matches-list');
       if (matchesEl) matchesEl.scrollIntoView({ behavior: 'smooth' });

@@ -32,6 +32,9 @@ if (loadedFiles.length) console.log('[proxy] dotenv loaded from:', loadedFiles);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Expose Retry-After so the browser lets frontend JS read it
+app.use(cors({ exposedHeaders: ['Retry-After', 'Content-Type'] }));
+
 // API base should point to the v4 root so forwarded paths (e.g. /teams/ID) resolve correctly
 const API_BASE = 'https://api.football-data.org/v4/';
 // accept either env var name and strip surrounding quotes if present
@@ -40,9 +43,9 @@ const API_TOKEN = rawToken.replace(/^['"]|['"]$/g, '');
 
 console.log(`[proxy] FOOTBALL_API token present: ${API_TOKEN ? 'yes' : 'no'} (length: ${API_TOKEN ? API_TOKEN.length : 0})`);
 
-// For development proxy allow requests from any origin (keeps browser CORS happy).
-// In production restrict this to known origins.
-app.use(cors());
+// Very small in-memory cache to reduce upstream calls
+const CACHE_TTL_MS = 60_000;
+const responseCache = new Map(); // key: upstream URL, val: { body, status, contentType, expiresAt }
 
 // Use a prefix-mounted middleware to handle all /api requests
 app.use('/api', async (req, res) => {
@@ -81,40 +84,42 @@ app.use('/api', async (req, res) => {
       console.error('[proxy] failed to build forward URL', err);
       return res.status(500).json({ error: 'Failed to build upstream URL', detail: String(err) });
     }
-    // debug: show constructed upstream URL
+    // debug: show constructed upstream URL:
     console.log('[proxy] constructed upstream URL:', url);
 
     // build headers, only include token when present
-    const headers = { 'Accept': 'application/json' };
+    const headers = { Accept: 'application/json' };
     if (API_TOKEN) headers['X-Auth-Token'] = API_TOKEN;
+
+    // serve from cache if fresh
+    const now = Date.now();
+    const cached = responseCache.get(url);
+    if (cached && cached.expiresAt > now) {
+      res.set('Content-Type', cached.contentType || 'application/json');
+      res.set('Cache-Control', 'public, max-age=60');
+      return res.status(cached.status).send(cached.body);
+    }
 
     const response = await fetch(url, {
       method: req.method,
       headers
-      // Note: this proxy handles GET requests used by the frontend; forwarding bodies would require additional parsing.
     });
 
     const body = await response.text();
     if (!response.ok) {
-      console.error(`[proxy] upstream ${response.status} for ${url}: ${body}`);
-      // Provide a helpful hint when status suggests auth / bad request issues
-      if (response.status === 400 || response.status === 401) {
-        return res.status(response.status).json({
-          error: 'Upstream API returned an authentication/bad request error',
-          status: response.status,
-          message: body,
-          hint: 'Verify the server environment variable FOOTBALL_API_TOKEN is set and valid.'
-        });
-      }
-      // relay other errors as-is (preserve content-type if available)
-      const ct = response.headers.get('content-type') || 'text/plain';
-      res.set('Content-Type', ct);
+      // forward Retry-After so frontend can respect it
+      const ra = response.headers.get('retry-after');
+      if (ra) res.set('Retry-After', ra);
+      res.set('Cache-Control', 'no-store');
       return res.status(response.status).send(body);
     }
 
     // relay JSON (already string in body)
     const ct = response.headers.get('content-type') || 'application/json';
     res.set('Content-Type', ct);
+    res.set('Cache-Control', 'public, max-age=60');
+    // write-through cache
+    responseCache.set(url, { body, status: response.status, contentType: ct, expiresAt: now + CACHE_TTL_MS });
     res.status(response.status).send(body);
 
   } catch (error) {
