@@ -390,8 +390,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!card) return;
     const teamId = card.getAttribute('data-team-id');
     if (!teamId) return;
+
     teamsSelect.value = teamId;
-    // players removed: team card click will not load players
+
+    // Load and show matches for the clicked team
+    try {
+      // football-data style endpoint: /teams/{id}/matches
+      const data = await fetchAPI(`/teams/${teamId}/matches`);
+      // some proxies return { matches: [...] } others return the array directly
+      const matches = Array.isArray(data) ? data : (data.matches || []);
+      displayMatches(matches);
+      const matchesEl = document.getElementById('matches-list');
+      if (matchesEl) matchesEl.scrollIntoView({ behavior: 'smooth' });
+    } catch {
+      displayMatches([]);
+    }
   }
   // Attach listeners
   competitionsSelect?.addEventListener('change', handleCompetitionChange);
