@@ -17,6 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // API config and checks
   const API_BASE = 'http://localhost:3000/api';
+  // Set your API token here if authentication is required.
+  // For security, consider loading this from an environment variable or a secure config file.
   const API_TOKEN = '';
   const isFileProtocol = window.location.protocol === 'file:';
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
@@ -170,7 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const res = await fetch(url, opts);
         const text = await res.text();
-        if (res.ok) return JSON.parseSafe ? JSON.parseSafe(text) : JSON.parse(text);
+        if (res.ok) return JSON.parse(text);
         if (res.status === 429 && attempt < maxRetries) {
           attempt++;
           const ra = res.headers.get('retry-after');
@@ -381,10 +383,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.classList.toggle('dark-mode', isDark);
     document.body.classList.toggle('light-mode', !isDark);
     toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
   }
-  
-  setTheme(false); // Default light mode
 
+  // Load theme preference from localStorage, default to light mode
+  const savedTheme = localStorage.getItem('theme');
+  setTheme(savedTheme === 'dark');
   async function handleSearchButtonClick() {
     const q = searchInput.value.trim().toLowerCase();
     if (!q) {
@@ -392,12 +396,32 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     if (teamsSelect.value) {
-      await loadAndShowPlayersForTeam(teamsSelect.value);
-      return;
-    }
-    if (competitionsSelect.value) {
-      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
-      displayTeams(matchingTeams);
+      if (competitionsSelect.value) {
+        const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
+        displayTeams(matchingTeams);
+        // Only search players from matching teams for efficiency
+        if (matchingTeams.length) {
+          // fetch squads for matching teams only
+          const squadsPromises = matchingTeams.map(async team => {
+            let squad = cachedSquads.get(team.id);
+            if (!squad) {
+              try {
+                const teamData = await fetchAPI(`/teams/${team.id}`);
+                squad = teamData.squad || [];
+                cachedSquads.set(team.id, squad);
+              } catch {
+                squad = [];
+              }
+            }
+            return squad.map(p => ({ ...p, team: team.name }));
+          });
+          const squadsArray = await Promise.all(squadsPromises);
+          const allPlayers = squadsArray.flat();
+          const results = allPlayers.filter(p => p.name?.toLowerCase().includes(q));
+          displayPlayers(results);
+        }
+        return;
+      }
       await searchAcrossCompetitionTeams(q);
       return;
     }
@@ -412,18 +436,20 @@ document.addEventListener('DOMContentLoaded', () => {
     teamsSelect.value = teamId;
     await loadAndShowPlayersForTeam(teamId);
   }
-
   // Attach listeners
   competitionsSelect?.addEventListener('change', handleCompetitionChange);
   teamsSelect?.addEventListener('change', handleTeamChange);
-  searchInput?.addEventListener('input', debounce(handleSearchInput, SEARCH_DEBOUNCE_MS));
+  // Create a single debounced handler for search input
+  const debouncedSearchInputHandler = debounce(handleSearchInput, SEARCH_DEBOUNCE_MS);
+  searchInput?.addEventListener('input', debouncedSearchInputHandler);
   searchBtn?.addEventListener('click', handleSearchButtonClick);
   document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
   positionFilter?.addEventListener('change', handlePositionChange);
   toggleThemeBtn?.addEventListener('click', handleToggleTheme);
-
   if (matchDateInput) {
-    matchDateInput.max = new Date().toISOString().slice(0, 10);
+    if (!matchDateInput.max) {
+      matchDateInput.max = new Date().toISOString().slice(0, 10);
+    }
     matchDateInput.addEventListener('change', async e => {
       const date = e.target.value.trim();
       if (date) await loadMatchesForDate(date);
@@ -440,17 +466,21 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
       }
     });
-  }
-
-  // Initialization
   if (apiRequestsAllowed) {
-    loadCompetitions();
-    loadMatchesForPastWeekend();
-  } else {
-    populateSelect(competitionsSelect, []);
-    populateSelect(teamsSelect, []);
-    displayCompetitions([]);
-    displayTeams([]);
-    displayPlayers([]);
+    (async () => {
+      try {
+        await loadCompetitions();
+      } catch {
+        populateSelect(competitionsSelect, []);
+        displayCompetitions([]);
+      }
+      try {
+        await loadMatchesForPastWeekend();
+      } catch {
+        displayMatches([]);
+      }
+    })();
   }
+}
 });
+
