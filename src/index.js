@@ -342,13 +342,19 @@ document.addEventListener('DOMContentLoaded', () => {
   function setTheme(isDark) {
     document.body.classList.toggle('dark-mode', isDark);
     document.body.classList.toggle('light-mode', !isDark);
-    toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
+    if (toggleThemeBtn) {
+      toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
+      toggleThemeBtn.setAttribute('aria-pressed', String(isDark));
+      toggleThemeBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+    }
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
   }
 
-  // Load theme preference from localStorage, default to light mode
+  // Load theme preference from localStorage, default to system preference (then light mode)
   const savedTheme = localStorage.getItem('theme');
-  setTheme(savedTheme === 'dark');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  setTheme(savedTheme ? savedTheme === 'dark' : !!prefersDark);
+
   async function handleSearchButtonClick() {
     const q = searchInput.value.trim().toLowerCase();
     if (!q) {
@@ -429,6 +435,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const debouncedSearchInputHandler = debounce(handleSearchInput, SEARCH_DEBOUNCE_MS);
   searchInput?.addEventListener('input', debouncedSearchInputHandler);
   searchBtn?.addEventListener('click', handleSearchButtonClick);
+  toggleThemeBtn?.addEventListener('click', handleToggleTheme);
   document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
   // positionFilter listener removed (player UI removed)
 

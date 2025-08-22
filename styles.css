@@ -68,7 +68,6 @@ body {
   padding: 2rem 1.5rem;
   border-radius: 10px;
   box-shadow: var(--shadow);
-  display: grid;
   grid-template-rows: auto auto 1fr;
   gap: 1rem;
 }
@@ -409,4 +408,13 @@ button.secondary:hover { background: rgba(0,0,0,0.07); }
   body { padding: 1rem; }
   #app { padding: 1rem; border-radius: 8px; }
   .player-card, .team-card, .match-card { padding: 0.75rem; font-size: 0.9rem; }
+}
+
+/* Make the Dark/Light toggle button smaller */
+#toggleThemeBtn {
+  padding: 0.35rem 0.6rem; /* overrides global button padding */
+  line-height: 1.1;
+  border-radius: 4px;
+  padding:10px 10px;
+  display: inline-block;
 }
