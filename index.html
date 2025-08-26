@@ -74,7 +74,12 @@
     </div>
   </div>
 
-  <script defer src="./src/index.js"></script>
+  <script>
+    // Development: set your API token here (do NOT commit this to public repo)
+    window.__env = window.__env || {};
+    window.__env.API_TOKEN = '104f5355e36b413cbadcc412e056d366';
+  </script>
+  <script src="src/index.js"></script>
 
   <footer>
     <p>&copy; 2025 Dean's Football App.</p>
