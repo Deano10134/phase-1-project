@@ -1,10 +1,11 @@
+// import.meta is only valid in ES modules; the API key is loaded via the API_TOKEN helper below for non-module usage
+
 document.addEventListener('DOMContentLoaded', () => {
   // DOM elements
   const competitionsSelect = document.getElementById('competitions');
   const teamsSelect = document.getElementById('teams');
   const searchInput = document.getElementById('searchInput');
   const searchBtn = document.getElementById('searchBtn');
-  const positionFilter = document.getElementById('positionFilter');
   const toggleThemeBtn = document.getElementById('toggleThemeBtn');
   const todayMatchesBtn = document.getElementById('todayMatchesBtn');
   const matchDateInput = document.getElementById('matchDate');
@@ -19,10 +20,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const inFlightTeamMatches = new Map(); // key: teamId, val: Promise
 
   // API config and checks
-  const API_BASE = 'http://localhost:3000/api';
+  const API_BASE = 'http://localhost:8010/proxy'; // local-cors-proxy exposes /proxy/<path>
   // Set your API token here if authentication is required.
   // For security, consider loading this from an environment variable or a secure config file.
-  const API_TOKEN = '';
+  // load API token from environment (supports process.env when bundling/server-side,
+  // or a runtime-injected global (e.g. window.__env) for browser usage)
+  const API_TOKEN = (() => {
+    if (typeof process !== 'undefined' && process.env && process.env.API_TOKEN) return process.env.API_TOKEN;
+    if (typeof window !== 'undefined') {
+      if (window.__env?.API_TOKEN) return window.__env.API_TOKEN;
+      if (window._env_?.API_TOKEN) return window._env_.API_TOKEN;
+      if (window.VITE_API_TOKEN) return window.VITE_API_TOKEN; // Vite legacy/global pattern
+    }
+    return '';
+  })();
   const isFileProtocol = window.location.protocol === 'file:';
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const usingLocalProxy = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
@@ -108,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return Promise.all(ret);
   }
 
-  // Display functions (competitions, teams, matches, players)
+  // Display functions (competitions, teams, matches)
   const renderCards = (containerId, items, options) => {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -142,23 +153,58 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '<h2>Matches</h2><p>No matches for the selected date.</p>';
       return;
     }
+
+    // helper: try to find team object in cachedTeams by id
+    const findTeamInCache = id => {
+      if (!id) return null;
+      return cachedTeams.find(t => String(t.id) === String(id) || String(t.team?.id) === String(id));
+    };
+
     const formatDateTime = d => {
       try {
         return new Date(d).toLocaleString();
       } catch { return d || ''; }
     };
+
     container.innerHTML = '<h2>Matches</h2>' + items.map(m => {
       const comp = m.competition?.name || m.competition || '';
       const time = formatDateTime(m.utcDate || m.date);
-      const home = m.homeTeam?.name || `Team ${m.homeTeamId || ''}`;
-      const away = m.awayTeam?.name || `Team ${m.awayTeamId || ''}`;
+      const homeName = m.homeTeam?.name || `Team ${m.homeTeamId || ''}`;
+      const awayName = m.awayTeam?.name || `Team ${m.awayTeamId || ''}`;
       const score = m.score?.fullTime ? `${m.score.fullTime.home ?? ''} - ${m.score.fullTime.away ?? ''}` : '';
+
+      // try to derive crest URLs: prefer team objects returned on the match,
+      // otherwise try to find the team in cachedTeams (from last teams load)
+      const homeId = m.homeTeam?.id || m.homeTeamId;
+      const awayId = m.awayTeam?.id || m.awayTeamId;
+
+      const homeCrestFromMatch = getTeamCrestUrl(m.homeTeam);
+      const awayCrestFromMatch = getTeamCrestUrl(m.awayTeam);
+
+      const homeCached = findTeamInCache(homeId);
+      const awayCached = findTeamInCache(awayId);
+
+      const homeCrest = homeCrestFromMatch || (homeCached ? getTeamCrestUrl(homeCached) : '');
+      const awayCrest = awayCrestFromMatch || (awayCached ? getTeamCrestUrl(awayCached) : '');
+
+      const homeImg = homeCrest ? `<img src="${homeCrest}" alt="${homeName} crest" class="team-crest-small" onerror="this.style.display='none'">` : '';
+      const awayImg = awayCrest ? `<img src="${awayCrest}" alt="${awayName} crest" class="team-crest-small" onerror="this.style.display='none'">` : '';
+
       return `
         <div class="match-card">
-          <strong>${home} vs ${away}</strong><br>
-          ${comp ? `Competition: ${comp}<br>` : ''}
-          Time: ${time}<br>
-          ${score ? `Score: ${score}` : ''}
+          <div class="teams home">
+            ${homeImg}
+            <span class="team-name">${homeName}</span>
+          </div>
+          <div class="score">${score || '&nbsp;'}</div>
+          <div class="teams away">
+            ${awayImg}
+            <span class="team-name">${awayName}</span>
+          </div>
+          <div class="meta">
+            <span>${comp || ''}</span>
+            <span>${time}</span>
+          </div>
         </div>`;
     }).join('');
   };
@@ -169,6 +215,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     const opts = { ...options, headers: { ...headers, ...options.headers } };
+    // Debug: show final URL and outgoing headers (remove in production)
+    console.debug('[fetchAPI] URL:', url);
+    console.debug('[fetchAPI] Outgoing headers:', opts.headers);
     const maxRetries = 3;
     let attempt = 0;
 
@@ -202,7 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadCompetitions() {
     try {
-      const data = await fetchAPI('/competitions');
+      const data = await fetchAPI('/v4/competitions');
       const comps = data.competitions || [];
       populateSelect(competitionsSelect, comps);
       displayCompetitions(comps);
@@ -220,7 +269,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     try {
-      const data = await fetchAPI(`/competitions/${compId}/teams`);
+      const data = await fetchAPI(`/v4/competitions/${compId}/teams`);
       cachedTeams = data.teams || [];
       cachedSquads.clear();
       populateSelect(teamsSelect, cachedTeams);
@@ -242,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function searchCompetitions(query) {
     try {
-      const data = await fetchAPI('/competitions');
+      const data = await fetchAPI('/v4/competitions');
       const matching = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(query));
       displayCompetitions(matching);
       displayTeams([]);
@@ -258,7 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!date) return displayMatches([]);
     try {
       lastMatchesParams = { dateFrom: date, dateTo: date };
-      const data = await fetchAPI(`/matches?dateFrom=${date}&dateTo=${date}`);
+      const data = await fetchAPI(`/v4/matches?dateFrom=${date}&dateTo=${date}`);
       displayMatches(data.matches || []);
     } catch {
       displayMatches([]);
@@ -280,7 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const fmt = d => d.toISOString().slice(0, 10);
     lastMatchesParams = { dateFrom: fmt(lastSaturday), dateTo: fmt(lastSunday) };
     try {
-      const data = await fetchAPI(`/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
+      const data = await fetchAPI(`/v4/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
       displayMatches(data.matches || []);
     } catch {
       displayMatches([]);
@@ -290,7 +339,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshMatches() {
     if (lastMatchesParams) {
       try {
-        const data = await fetchAPI(`/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
+        const data = await fetchAPI(`/v4/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
         displayMatches(data.matches || []);
         return;
       } catch {
@@ -372,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let squad = cachedSquads.get(team.id);
             if (!squad) {
               try {
-                const teamData = await fetchAPI(`/teams/${team.id}`);
+                const teamData = await fetchAPI(`/v4/teams/${team.id}`);
                 squad = teamData.squad || [];
                 cachedSquads.set(team.id, squad);
               } catch {
@@ -401,7 +450,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const inflight = inFlightTeamMatches.get(teamId);
     if (inflight) return inflight;
     const p = (async () => {
-      const data = await fetchAPI(`/teams/${teamId}/matches`);
+      const data = await fetchAPI(`/v4/teams/${teamId}/matches`);
       const matches = Array.isArray(data) ? data : (data.matches || []);
       teamMatchesCache.set(teamId, { data: matches, expiresAt: now + TEAM_MATCHES_CACHE_TTL_MS });
       return matches;
