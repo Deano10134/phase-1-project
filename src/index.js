@@ -1,5 +1,3 @@
-// import.meta is only valid in ES modules; the API key is loaded via the API_TOKEN helper below for non-module usage
-
 document.addEventListener('DOMContentLoaded', () => {
   // DOM elements
   const competitionsSelect = document.getElementById('competitions');
@@ -247,65 +245,71 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // API fetch helper with retry on 429
+  async function fetchWithRetry(url, options = {}, retries = 5, baseDelay = 500) {
+    let attempt = 0;
+    while (true) {
+      try {
+        const res = await fetch(url, options);
+
+        // Handle 429 (rate limit) with Retry-After if present, otherwise exponential backoff
+        if (res.status === 429 && attempt < retries) {
+          attempt++;
+          const ra = res.headers.get('Retry-After');
+          const waitMs = ra ? Number(ra) * 1000 : baseDelay * Math.pow(2, attempt);
+          console.warn(`[fetchWithRetry] 429 received, retrying in ${waitMs}ms (attempt ${attempt})`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+
+        // Return response for caller to inspect (allow caller to parse text/json and handle non-ok)
+        return res;
+      } catch (err) {
+        if (attempt >= retries) throw err;
+        attempt++;
+        const waitMs = baseDelay * Math.pow(2, attempt);
+        console.warn(`[fetchWithRetry] network error, retrying in ${waitMs}ms (attempt ${attempt})`, err);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+  }
+
   async function fetchAPI(path, options = {}) {
     if (!apiRequestsAllowed) throw new Error('API requests are disabled: serve from localhost or start proxy.');
 
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     const opts = { ...options, headers: { ...headers, ...options.headers } };
-    // Debug: show final URL and outgoing headers (remove in production)
+
     console.debug('[fetchAPI] URL:', url);
     console.debug('[fetchAPI] Outgoing headers:', opts.headers);
-    const maxRetries = 3;
-    let attempt = 0;
 
-    while (true) {
-      try {
-        const res = await fetch(url, opts);
-        const text = await res.text();
+    try {
+      let res = await fetchWithRetry(url, opts, 4, 500);
+      let text = await res.text();
 
-        // Successful response
-        if (res.ok) return JSON.parse(text);
-
-        // Special-case: Forbidden (403) — try a direct request if we appear to be using a local proxy
-        if (res.status === 403) {
-          console.warn(`[fetchAPI] 403 Forbidden from ${url}`);
-          try {
-            // If we're using a local proxy and have an API token, attempt a direct call to the official API
-            if ((typeof usingLocalProxy !== 'undefined' && usingLocalProxy) && API_TOKEN) {
-              const directBase = 'https://api.football-data.org/v4';
-              const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
-              const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
-              console.debug('[fetchAPI] retrying directly against official API:', directUrl);
-              const directRes = await fetch(directUrl, directOpts);
-              const directText = await directRes.text();
-              if (directRes.ok) return JSON.parse(directText);
-              console.warn('[fetchAPI] direct retry failed', directRes.status, directRes.statusText);
-            }
-          } catch (directErr) {
-            console.warn('[fetchAPI] direct retry error', directErr);
-          }
+      // If 403 and we're using local proxy, attempt a direct call to official API when token available
+      if (res.status === 403 && usingLocalProxy && API_TOKEN) {
+        try {
+          const directBase = 'https://api.football-data.org/v4';
+          const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
+          const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
+          console.debug('[fetchAPI] 403 received, retrying directly against official API:', directUrl);
+          res = await fetchWithRetry(directUrl, directOpts, 3, 700);
+          text = await res.text();
+        } catch (directErr) {
+          console.warn('[fetchAPI] direct retry failed', directErr);
         }
-
-        // Retry when receiving 429 (rate limit)
-        if (res.status === 429 && attempt < maxRetries) {
-          attempt++;
-          const ra = res.headers.get('retry-after');
-          const waitMs = ra ? Number(ra) * 1000 : (2 ** attempt) * 500;
-          await new Promise(r => setTimeout(r, waitMs));
-          continue;
-        }
-
-        let parsedData = text;
-        try { parsedData = JSON.parse(text); } catch {}
-        throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsedData === 'string' ? parsedData : JSON.stringify(parsedData)}`);
-      } catch (err) {
-        if (attempt < maxRetries) {
-          attempt++;
-          await new Promise(r => setTimeout(r, 500 * attempt));
-          continue;
-        }
-        throw err;
       }
+
+      if (res.ok) {
+        try { return JSON.parse(text); } catch { return text; }
+      }
+
+      let parsed = text;
+      try { parsed = JSON.parse(text); } catch {}
+      throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`);
+    } catch (err) {
+      // rethrow so callers can handle/display as they currently do
+      throw err;
     }
   }
 
@@ -468,41 +472,88 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function handleSearchButtonClick() {
     const q = searchInput.value.trim().toLowerCase();
+    const scrollTo = id => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    // If empty search, reset to defaults
     if (!q) {
       await loadCompetitions();
+      await loadMatchesForToday();
+      scrollTo('competitions-list');
       return;
     }
-    if (teamsSelect.value) {
-      if (competitionsSelect.value) {
-        const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
-        displayTeams(matchingTeams);
-        // Only search players from matching teams for efficiency
-        if (matchingTeams.length) {
-          // fetch squads for matching teams only
-          const squadsPromises = matchingTeams.map(async team => {
-            let squad = cachedSquads.get(team.id);
-            if (!squad) {
-              try {
-                const teamData = await fetchAPI(`/v4/teams/${team.id}`);
-                squad = teamData.squad || [];
-                cachedSquads.set(team.id, squad);
-              } catch {
-                squad = [];
-              }
-            }
-            return squad.map(p => ({ ...p, team: team.name }));
-          });
-          const squadsArray = await Promise.all(squadsPromises);
-          const allPlayers = squadsArray.flat();
-          const results = allPlayers.filter(p => p.name?.toLowerCase().includes(q));
-          displayPlayers(results);
-        }
-        return;
+
+    // Case 1: Competition is already selected → search teams inside it
+    if (competitionsSelect.value) {
+      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
+      displayTeams(matchingTeams);
+
+      if (matchingTeams.length) {
+        const allMatches = await asyncPool(3, matchingTeams, async team => await getTeamMatches(team.id));
+        displayMatches(allMatches.flat());
+        scrollTo('matches-list');
+      } else {
+        displayMatches([]);
+        scrollTo('teams-list');
       }
-      // players removed: team-specific search handled by team card click
       return;
     }
-    await searchCompetitions(q);
+
+    // Case 2: No competition selected → search competitions AND teams globally
+    let competitionsData = [];
+    let allTeams = [];
+
+    try {
+      const data = await fetchAPI('/v4/competitions');
+      competitionsData = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(q));
+      displayCompetitions(competitionsData);
+      if (competitionsData.length) scrollTo('competitions-list');
+    } catch {
+      displayCompetitions([]);
+      scrollTo('competitions-list');
+    }
+
+    // If competitions matched, fetch their teams
+    if (competitionsData.length) {
+      for (const comp of competitionsData) {
+        try {
+          const data = await fetchAPI(`/v4/competitions/${comp.id}/teams`);
+          const teams = data.teams || [];
+          allTeams.push(...teams);
+        } catch {}
+      }
+    }
+
+    // Always try to search teams globally (even outside matched competitions)
+    try {
+      const data = await fetchAPI('/v4/teams'); // ⚠️ depends on API support
+      const globalTeams = data.teams || [];
+      const teamMatches = globalTeams.filter(t => t.name?.toLowerCase().includes(q));
+      allTeams.push(...teamMatches);
+    } catch {
+      // If API doesn't support /teams, fallback to just competitions
+    }
+
+    // Deduplicate teams by ID
+    const seen = new Set();
+    const uniqueTeams = allTeams.filter(t => {
+      if (!t.id || seen.has(t.id)) return false;
+      seen.add(t.id);
+      return true;
+    });
+
+    cachedTeams = uniqueTeams;
+    displayTeams(uniqueTeams);
+
+    if (uniqueTeams.length) {
+      const allMatches = await asyncPool(3, uniqueTeams, async team => await getTeamMatches(team.id));
+      displayMatches(allMatches.flat());
+      scrollTo('matches-list');
+    } else {
+      displayMatches([]);
+      // If we have competitions results, show competitions; otherwise show teams section
+      if (competitionsData.length) scrollTo('competitions-list');
+      else scrollTo('teams-list');
+    }
   }
 
   async function getTeamMatches(teamId) {
@@ -588,4 +639,3 @@ document.addEventListener('DOMContentLoaded', () => {
     })();
   }
 });
-

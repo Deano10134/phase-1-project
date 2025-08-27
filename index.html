@@ -14,10 +14,11 @@
     <p>The app has been developed as part of my Software Engineer Course to showcase my skills in JavaScript, HTML and CSS.</p>
 
     <div id="search-container">
-      <form id="searchForm">
-        <input type="text" id="searchInput" placeholder="Search competitions or teams..." />
-        <!-- changed to type="button" to prevent form submit navigation -->
-        <button id="searchBtn" type="button" aria-label="Search">Search</button>
+      <form id="searchForm" role="search" aria-label="Search competitions and teams" onsubmit="return false;">
+        <label for="searchInput" class="visually-hidden">Search competitions or teams</label>
+        <input type="search" id="searchInput" name="q" placeholder="Search competitions or teams..." aria-label="Search competitions or teams" />
+        <!-- use type="button" so JS handles the action and form submit/navigation is prevented -->
+        <button id="searchBtn" type="button" aria-label="Search" title="Search">Search</button>
       </form>
     </div>
 
