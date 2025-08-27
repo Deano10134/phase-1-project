@@ -1,1 +1,3 @@
+# Local dev env file
+/src/env.local.js
 .env
