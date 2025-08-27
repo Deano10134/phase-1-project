@@ -17,6 +17,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const teamMatchesCache = new Map(); // key: teamId, val: { data, expiresAt }
   const inFlightTeamMatches = new Map(); // key: teamId, val: Promise
 
+  // Safety limits to avoid hitting API rate limits during broad searches
+  const MAX_TEAMS_FETCH = 5;           // lower cap to avoid many requests
+  const TEAM_MATCHES_CONCURRENCY = 1;  // single-threaded fetches to reduce bursts
+
+  // Global rate-limit pause (timestamp ms). When non-zero, fetchAPI will wait until this time.
+  let globalRateLimitUntil = 0;
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
   // API config and checks
   const API_BASE = 'http://localhost:8010/proxy'; // local-cors-proxy exposes /proxy/<path>
   // Development: set your API token here (do NOT commit this to public repo)
@@ -28,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!isLocal) return;
       window.__env = window.__env || {};
       if (!window.__env.API_TOKEN) {
-        window.__env.API_TOKEN = '104f5355e36b413cbadcc412e056d366';
+        window.__env.API_TOKEN = 'Your API key here';
         // Allow the existing startup code to read the token, then delete it quickly.
         setTimeout(() => { try { delete window.__env.API_TOKEN; } catch (e) {} }, 100);
         console.warn('Local API token injected for development. Do NOT commit this token.');
@@ -137,21 +146,59 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // concurrency helper (limits parallel requests if needed)
   async function asyncPool(poolLimit, array, iteratorFn) {
+    if (!Array.isArray(array) || !array.length) return [];
+    poolLimit = Math.max(1, Math.floor(poolLimit) || 1);
+
     const ret = [];
     const executing = [];
+
     for (const item of array) {
       const p = Promise.resolve().then(() => iteratorFn(item));
       ret.push(p);
 
-      if (poolLimit <= array.length) {
-        const e = p.then(() => executing.splice(executing.indexOf(e), 1));
-        executing.push(e);
-        if (executing.length >= poolLimit) {
-          await Promise.race(executing);
-        }
+      const e = p.then(() => {
+        const idx = executing.indexOf(e);
+        if (idx >= 0) executing.splice(idx, 1);
+      }).catch(() => {
+        const idx = executing.indexOf(e);
+        if (idx >= 0) executing.splice(idx, 1);
+      });
+
+      executing.push(e);
+
+      if (executing.length >= poolLimit) {
+        // wait for at least one to finish before queuing more
+        await Promise.race(executing);
       }
     }
+
     return Promise.all(ret);
+  }
+
+  // small UI helper to show transient notices (used when we trim results to avoid rate limits)
+  function showNotice(msg, timeout = 4000) {
+    let b = document.getElementById('notice-banner');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'notice-banner';
+      b.style.cssText = [
+        'position:fixed',
+        'top:12px',
+        'right:12px',
+        'background:rgba(0,0,0,0.8)',
+        'color:#fff',
+        'padding:8px 12px',
+        'border-radius:6px',
+        'z-index:9999',
+        'font-family:system-ui,Arial,sans-serif',
+        'box-shadow:0 4px 12px rgba(0,0,0,0.15)'
+      ].join(';');
+      document.body.appendChild(b);
+    }
+    b.textContent = msg;
+    b.style.display = 'block';
+    clearTimeout(b._hideTimeout);
+    b._hideTimeout = setTimeout(() => { b.style.display = 'none'; }, timeout);
   }
 
   // Display functions (competitions, teams, matches)
@@ -248,6 +295,14 @@ document.addEventListener('DOMContentLoaded', () => {
   async function fetchWithRetry(url, options = {}, retries = 5, baseDelay = 500) {
     let attempt = 0;
     while (true) {
+      // If a global rate-limit pause is active, wait first
+      const now = Date.now();
+      if (globalRateLimitUntil > now) {
+        const wait = globalRateLimitUntil - now;
+        console.warn(`[fetchWithRetry] global rate-limit active, waiting ${wait}ms`);
+        await sleep(wait);
+      }
+
       try {
         const res = await fetch(url, options);
 
@@ -256,8 +311,10 @@ document.addEventListener('DOMContentLoaded', () => {
           attempt++;
           const ra = res.headers.get('Retry-After');
           const waitMs = ra ? Number(ra) * 1000 : baseDelay * Math.pow(2, attempt);
-          console.warn(`[fetchWithRetry] 429 received, retrying in ${waitMs}ms (attempt ${attempt})`);
-          await new Promise(r => setTimeout(r, waitMs));
+          // set a global pause to prevent other concurrent requests from hammering API
+          globalRateLimitUntil = Date.now() + waitMs;
+          console.warn(`[fetchWithRetry] 429 received, setting global pause ${waitMs}ms (attempt ${attempt})`);
+          await sleep(waitMs + 50); // small cushion
           continue;
         }
 
@@ -268,7 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
         attempt++;
         const waitMs = baseDelay * Math.pow(2, attempt);
         console.warn(`[fetchWithRetry] network error, retrying in ${waitMs}ms (attempt ${attempt})`, err);
-        await new Promise(r => setTimeout(r, waitMs));
+        await sleep(waitMs);
       }
     }
   }
@@ -488,9 +545,19 @@ document.addEventListener('DOMContentLoaded', () => {
       displayTeams(matchingTeams);
 
       if (matchingTeams.length) {
-        const allMatches = await asyncPool(3, matchingTeams, async team => await getTeamMatches(team.id));
-        displayMatches(allMatches.flat());
-        scrollTo('matches-list');
+        const teamsToFetch = matchingTeams.slice(0, MAX_TEAMS_FETCH);
+        if (teamsToFetch.length < matchingTeams.length) showNotice(`Showing matches for first ${teamsToFetch.length} teams (limited to avoid rate limits)`);
+
+        try {
+          const allMatches = await asyncPool(TEAM_MATCHES_CONCURRENCY, teamsToFetch, async team => await getTeamMatches(team.id));
+          displayMatches(allMatches.flat());
+          scrollTo('matches-list');
+        } catch (err) {
+          console.warn('[search] failed fetching team matches', err);
+          showNotice('Failed to fetch some match data (rate limit). Try again in a moment.');
+          displayMatches([]);
+          scrollTo('teams-list');
+        }
       } else {
         displayMatches([]);
         scrollTo('teams-list');
@@ -545,14 +612,23 @@ document.addEventListener('DOMContentLoaded', () => {
     displayTeams(uniqueTeams);
 
     if (uniqueTeams.length) {
-      const allMatches = await asyncPool(3, uniqueTeams, async team => await getTeamMatches(team.id));
-      displayMatches(allMatches.flat());
-      scrollTo('matches-list');
+      const teamsToFetch = uniqueTeams.slice(0, MAX_TEAMS_FETCH);
+      if (teamsToFetch.length < uniqueTeams.length) showNotice(`Showing matches for first ${teamsToFetch.length} teams (limited to avoid rate limits)`);
+
+      try {
+        const allMatches = await asyncPool(TEAM_MATCHES_CONCURRENCY, teamsToFetch, async team => await getTeamMatches(team.id));
+        displayMatches(allMatches.flat());
+        scrollTo('matches-list');
+      } catch (err) {
+        console.warn('[search] failed fetching team matches', err);
+        showNotice('Failed to fetch some match data (rate limit). Try again in a moment.');
+        displayMatches([]);
+        // If we have competitions results, show competitions; otherwise show teams section
+        if (competitionsData.length) scrollTo('competitions-list');
+        else scrollTo('teams-list');
+      }
     } else {
       displayMatches([]);
-      // If we have competitions results, show competitions; otherwise show teams section
-      if (competitionsData.length) scrollTo('competitions-list');
-      else scrollTo('teams-list');
     }
   }
 
