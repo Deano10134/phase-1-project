@@ -3,32 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Football Search App</title>
+  <title>Football Search App</title>    
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body class="light-mode">
   <div id="app">
+       <button id="toggleThemeBtn">Switch to Dark Mode</button>
     <h1>Football Search App</h1>
     <p>Welcome to Dean's Football search app. This simple web allows you to search any football team or match in the world.</p>
     <p>The app has been developed as part of my Software Engineer Course to showcase my skills in JavaScript, HTML and CSS.</p>
 
     <div id="search-container">
-      <form id="searchForm">
-        <input type="text" id="searchInput" placeholder="Search players or teams..." />
-        <!-- changed to type="button" to prevent form submit navigation -->
-        <button id="searchBtn" type="button" aria-label="Search">Search</button>
+      <form id="searchForm" role="search" aria-label="Search competitions and teams" onsubmit="return false;">
+        <label for="searchInput" class="visually-hidden">Search competitions or teams</label>
+        <input type="search" id="searchInput" name="q" placeholder="Search competitions or teams..." aria-label="Search competitions or teams" />
+        <!-- use type="button" so JS handles the action and form submit/navigation is prevented -->
+        <button id="searchBtn" type="button" aria-label="Search" title="Search">Search</button>
       </form>
     </div>
 
-    <select id="positionFilter">
-      <option value="">All Positions</option>
-      <option value="Forward">Forward</option>
-      <option value="Midfielder">Midfielder</option>
-      <option value="Defender">Defender</option>
-      <option value="Goalkeeper">Goalkeeper</option>
-    </select>
-
-    <select id="competitions">
+    <select id="competitions"><label> Select compeitions or all will show by default.</label>
       <option value="">Select Competitions</option>
     </select>
 
@@ -37,8 +31,6 @@
     </select>
 
     <!-- <ul id="squad"></ul>  -->
-
-    <button id="toggleThemeBtn">Switch to Dark Mode</button>
 
     <!-- Matches of the Day section -->
     <section id="matches-section" aria-labelledby="matches-heading">
@@ -73,12 +65,7 @@
       <div id="players-list"></div>
     </div>
   </div>
-
-  <script>
-    // Development: set your API token here (do NOT commit this to public repo)
-    window.__env = window.__env || {};
-    window.__env.API_TOKEN = '104f5355e36b413cbadcc412e056d366';
-  </script>
+  <script src="./src/env.local.js"></script>
   <script src="src/index.js"></script>
 
   <footer>

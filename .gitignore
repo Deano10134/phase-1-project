@@ -1,1 +1,4 @@
+# Local dev env file
+/src/env.local.js
 .env
+/src/generate-env.js
