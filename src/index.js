@@ -37,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!isLocal) return;
       window.__env = window.__env || {};
       if (!window.__env.API_TOKEN) {
-        window.__env.API_TOKEN = 'Your API key here';
+        window.__env.API_TOKEN = '104f5355e36b413cbadcc412e056d366';
         // Allow the existing startup code to read the token, then delete it quickly.
         setTimeout(() => { try { delete window.__env.API_TOKEN; } catch (e) {} }, 100);
         console.warn('Local API token injected for development. Do NOT commit this token.');
@@ -346,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // If 403 and we're using local proxy, attempt a direct call to official API when token available
       if (res.status === 403 && usingLocalProxy && API_TOKEN) {
         try {
-          const directBase = 'https://api.football-data.org/v4';
+          const directBase = 'https://api.football-data.org/v4/';
           const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
           const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
           console.debug('[fetchAPI] 403 received, retrying directly against official API:', directUrl);
@@ -399,7 +399,8 @@ document.addEventListener('DOMContentLoaded', () => {
       displayTeams(cachedTeams);
       if (cachedTeams.length) {
         teamsSelect.value = cachedTeams[0].id;
-        // players removed: do not auto-load squad to avoid extra API requests
+        // ensure selecting programmatically triggers team-change behavior
+        teamsSelect.dispatchEvent(new Event('change', { bubbles: true }));
       } else {
         clearPlayers();
       }
@@ -478,12 +479,23 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function handleTeamChange() {
-    // players removed — selecting a team will just set the select value and clear players area
-    if (!teamsSelect.value) {
+    // When a team is selected via the dropdown, load and show its matches.
+    const teamId = teamsSelect?.value;
+    if (!teamId) {
       clearPlayers();
+      displayMatches([]);
       return;
     }
-    clearPlayers();
+
+    clearPlayers(); // keep previous behavior of clearing players area
+    try {
+      const matches = await getTeamMatches(teamId);
+      displayMatches(matches);
+      document.getElementById('matches-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      console.warn('[handleTeamChange] failed fetching matches for team', teamId, err);
+      displayMatches([]);
+    }
   }
 
   async function handleSearchInput() {
