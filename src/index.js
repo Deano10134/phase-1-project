@@ -106,6 +106,24 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   };
 
+  // return YYYY-MM-DD for today
+  const getTodayStr = () => new Date().toISOString().slice(0, 10);
+
+  // Update the matches date label in the header and optionally set the date input value
+  function setMatchesDateLabel(from, to = from) {
+    const el = document.getElementById('matchesDate');
+    if (!el) return;
+    if (!from) {
+      el.textContent = '';
+      return;
+    }
+    if (from === to) {
+      el.textContent = new Date(from).toLocaleDateString();
+    } else {
+      el.textContent = `${new Date(from).toLocaleDateString()} — ${new Date(to).toLocaleDateString()}`;
+    }
+  }
+
   const normalizeItems = (data, keys = ['teams', 'competitions', 'items', 'matches']) => {
     if (!data) return [];
     if (Array.isArray(data)) return data;
@@ -428,18 +446,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function loadMatchesForDate(date) {
-    if (!date) return displayMatches([]);
+    if (!date) {
+      setMatchesDateLabel(null);
+      return displayMatches([]);
+    }
     try {
       lastMatchesParams = { dateFrom: date, dateTo: date };
+      // ensure the date input shows the date we are loading
+      if (matchDateInput) matchDateInput.value = date;
+      setMatchesDateLabel(date, date);
       const data = await fetchAPI(`/v4/matches?dateFrom=${date}&dateTo=${date}`);
       displayMatches(data.matches || []);
     } catch {
+      setMatchesDateLabel(null);
       displayMatches([]);
     }
   }
 
   async function loadMatchesForToday() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getTodayStr();
     await loadMatchesForDate(today);
   }
 
@@ -453,9 +478,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const fmt = d => d.toISOString().slice(0, 10);
     lastMatchesParams = { dateFrom: fmt(lastSaturday), dateTo: fmt(lastSunday) };
     try {
+      // show range in header (date input left blank because it's a range)
+      setMatchesDateLabel(lastMatchesParams.dateFrom, lastMatchesParams.dateTo);
+      // Clear any single-date selection to indicate a range is shown
+      if (matchDateInput) matchDateInput.value = '';
       const data = await fetchAPI(`/v4/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
       displayMatches(data.matches || []);
     } catch {
+      setMatchesDateLabel(null);
       displayMatches([]);
     }
   }
@@ -690,13 +720,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // positionFilter listener removed (player UI removed)
 
   if (matchDateInput) {
-    if (!matchDateInput.max) {
-      matchDateInput.max = new Date().toISOString().slice(0, 10);
-    }
+    // always keep max up-to-date (prevents selecting future dates)
+    matchDateInput.max = getTodayStr();
+
+    // accept only ISO date (YYYY-MM-DD); empty → load past weekend
+    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
     matchDateInput.addEventListener('change', async e => {
-      const date = e.target.value.trim();
-      if (date) await loadMatchesForDate(date);
-      else await loadMatchesForPastWeekend();
+      const date = (e.target.value || '').trim();
+      if (!date) {
+        await loadMatchesForPastWeekend();
+        return;
+      }
+      if (!isoDateRe.test(date)) {
+        showNotice('Invalid date format — use YYYY-MM-DD');
+        return;
+      }
+      await loadMatchesForDate(date);
+    });
+
+    // Allow clearing with Escape (convenience)
+    matchDateInput.addEventListener('keydown', async e => {
+      if (e.key === 'Escape') {
+        matchDateInput.value = '';
+        await loadMatchesForPastWeekend();
+      }
     });
   }
 
@@ -704,7 +751,11 @@ document.addEventListener('DOMContentLoaded', () => {
     todayMatchesBtn.addEventListener('click', async () => {
       todayMatchesBtn.disabled = true;
       try {
-        await refreshMatches();
+        const today = getTodayStr();
+        // update the date input and header, then load today's matches
+        if (matchDateInput) matchDateInput.value = today;
+        setMatchesDateLabel(today, today);
+        await loadMatchesForDate(today);
       } finally {
         setTimeout(() => { todayMatchesBtn.disabled = false; }, 400);
       }
