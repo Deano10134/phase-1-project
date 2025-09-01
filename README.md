@@ -1,6 +1,6 @@
 # Football Search App
 
-The Football Search App lets you search football competitions, teams and matches using the football-data API. This README focuses on quick setup, environment handling, running a local proxy (recommended) and common troubleshooting (CORS / 403).
+The Football Search App lets you search football competitions, teams and matches using the football-data API (https://api.football-data.org/v4/). This README focuses on quick setup, environment handling, running a local proxy (recommended) and common troubleshooting (CORS / 403).
 
 ## Quick summary
 
@@ -53,7 +53,7 @@ Serve the project directory over HTTP (do NOT open `file://`), e.g.:
 
 - Using `serve`:
   ```
-  npx serve .
+  npx serve  example: npx local-cors-proxy --proxyURL https://api.football-data.org --port [port-number] .
   ```
 - Or using Python:
   ```
