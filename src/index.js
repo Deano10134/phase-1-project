@@ -10,19 +10,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Cache and constants
   let cachedTeams = [];
+  let cachedCompetitions = [];
+  let cachedGlobalTeams = [];
+  let globalTeamsLoaded = false;
   const cachedSquads = new Map();
   const SEARCH_DEBOUNCE_MS = 300;
   let lastMatchesParams = null;
   const TEAM_MATCHES_CACHE_TTL_MS = 60_000;
   const teamMatchesCache = new Map(); // key: teamId, val: { data, expiresAt }
-  const inFlightTeamMatches = new Map(); // key: teamId, val: Promise
+  const inFlightTeamMatches = new Map(); // key: teamKey, val: Promise
 
-  // Safety limits to avoid hitting API rate limits during broad searches
-  const MAX_TEAMS_FETCH = 5;           // lower cap to avoid many requests
-  const TEAM_MATCHES_CONCURRENCY = 1;  // single-threaded fetches to reduce bursts
+  // Track last selected team (from dropdown or card) so refresh can target it
+  let lastSelectedTeamId = null;
+  // Track last selected competition so refresh can target it when no team is chosen
+  let lastSelectedCompetitionId = null;
 
-  // Global rate-limit pause (timestamp ms). When non-zero, fetchAPI will wait until this time.
-  let globalRateLimitUntil = 0;
+  // Dedupe identical outgoing API requests to avoid parallel retries causing 429 storms
+  const inFlightRequests = new Map(); // key: method::url::body, val: Promise
+
+  // Global circuit-breaker for API rate limiting.
+  // When true, fetchAPI / fetchWithRetry will fail fast until reset.
+  let isGloballyRateLimited = false;
+  let globalRateLimitUntil = 0; // timestamp ms
+  let _globalRateLimitTimer = null;
+
+  function setGlobalRateLimit(waitMs) {
+    try {
+      isGloballyRateLimited = true;
+      globalRateLimitUntil = Date.now() + Math.max(0, Number(waitMs) || 0);
+      clearTimeout(_globalRateLimitTimer);
+      _globalRateLimitTimer = setTimeout(() => {
+        isGloballyRateLimited = false;
+        globalRateLimitUntil = 0;
+      }, (globalRateLimitUntil - Date.now()) + 50);
+      try { showNotice && showNotice('API rate limit active — backing off'); } catch {}
+      console.warn(`[rate-limit] global pause set for ${waitMs}ms`);
+    } catch (e) { /* ignore */ }
+  }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -96,6 +120,143 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const headers = { Accept: 'application/json', ...(API_TOKEN && { 'X-Auth-Token': API_TOKEN }) };
+
+  // --- Search suggestions UI state ---
+  let suggestionBox = null;
+  let suggestionItems = [];
+  let suggestionFocused = -1;
+
+  function createSuggestionBox() {
+    if (suggestionBox) return suggestionBox;
+    suggestionBox = document.createElement('div');
+    suggestionBox.id = 'search-suggestions';
+    suggestionBox.style.cssText = [
+      'position: absolute',
+      'z-index: 9998',
+      'background: #fff',
+      'border: 1px solid rgba(0,0,0,0.12)',
+      'box-shadow: 0 6px 18px rgba(0,0,0,0.08)',
+      'max-height:240px',
+      'overflow:auto',
+      'min-width:220px',
+      'font-family:system-ui,Arial,sans-serif'
+    ].join(';');
+    document.body.appendChild(suggestionBox);
+    return suggestionBox;
+  }
+
+  function positionSuggestionBox() {
+    if (!suggestionBox || !searchInput) return;
+    const r = searchInput.getBoundingClientRect();
+    suggestionBox.style.left = `${r.left + window.scrollX}px`;
+    suggestionBox.style.top = `${r.bottom + window.scrollY + 6}px`;
+    suggestionBox.style.width = `${Math.max(220, r.width)}px`;
+  }
+
+  function hideSearchSuggestions() {
+    if (!suggestionBox) return;
+    suggestionBox.style.display = 'none';
+    suggestionItems = [];
+    suggestionFocused = -1;
+  }
+
+  function showSearchSuggestions(list) {
+    createSuggestionBox();
+    positionSuggestionBox();
+    if (!list || !list.length) { hideSearchSuggestions(); return; }
+    suggestionBox.innerHTML = list.map((it, i) => {
+      const subtitle = it.type === 'team' ? (it.extra?.competition?.name || '') : (it.extra?.area?.name || '');
+      return `<div class="sugg-item" data-idx="${i}" data-type="${it.type}" data-id="${it.id}" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,0.04)">
+        <div style="font-weight:600">${escapeHtml(it.name)}</div>
+        <div style="font-size:11px;color:#666;margin-top:4px">${escapeHtml(subtitle)}</div>
+      </div>`;
+    }).join('');
+    suggestionBox.style.display = 'block';
+
+    // attach pointer handlers
+    Array.from(suggestionBox.querySelectorAll('.sugg-item')).forEach(el => {
+      el.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault(); // prevent blur before click
+        const idx = Number(el.getAttribute('data-idx'));
+        const sel = list[idx];
+        if (sel) selectSuggestion(sel);
+      });
+    });
+  }
+
+  function escapeHtml(s='') { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  async function selectSuggestion(item) {
+    if (!item) return hideSearchSuggestions();
+    // Populate input
+    searchInput.value = item.name;
+    hideSearchSuggestions();
+
+    // If team selected -> load team matches (honor date input)
+    if (item.type === 'team') {
+      lastSelectedTeamId = item.id;
+      lastSelectedCompetitionId = null;
+      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+      const selectedDate = (matchDateInput?.value || '').trim();
+      const matches = (selectedDate && isoDateRe.test(selectedDate))
+        ? await getTeamMatches(item.id, { dateFrom: selectedDate, dateTo: selectedDate })
+        : await getTeamMatches(item.id);
+      displayTeams([item.extra || { id: item.id, name: item.name }]);
+      displayMatches(matches || []);
+      return;
+    }
+
+    // If competition selected -> load competition matches (honor date input)
+    if (item.type === 'competition') {
+      lastSelectedCompetitionId = item.id;
+      lastSelectedTeamId = null;
+      try {
+        const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const selectedDate = (matchDateInput?.value || '').trim();
+        const path = selectedDate && isoDateRe.test(selectedDate)
+          ? `/v4/competitions/${item.id}/matches?dateFrom=${selectedDate}&dateTo=${selectedDate}`
+          : `/v4/competitions/${item.id}/matches`;
+        const data = await fetchAPI(path);
+        displayCompetitions([item.extra || { id: item.id, name: item.name }]);
+        displayMatches(data.matches || []);
+      } catch {
+        displayMatches([]);
+      }
+      return;
+    }
+  }
+
+  function focusNextSuggestion(delta = 1) {
+    const nodes = suggestionBox?.querySelectorAll('.sugg-item') || [];
+    if (!nodes.length) return;
+    suggestionFocused = (suggestionFocused + delta + nodes.length) % nodes.length;
+    nodes.forEach(n => n.style.background = '');
+    const el = nodes[suggestionFocused];
+    if (el) el.style.background = 'rgba(0,0,0,0.04)';
+  }
+
+  // Key handler for suggestion navigation
+  function suggestionKeyHandler(e) {
+    if (!suggestionBox || suggestionBox.style.display === 'none') return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); focusNextSuggestion(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); focusNextSuggestion(-1); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      const nodes = suggestionBox.querySelectorAll('.sugg-item');
+      if (nodes[suggestionFocused]) {
+        const idx = Number(nodes[suggestionFocused].getAttribute('data-idx'));
+        // rebuild last suggestions list from DOM (index maps)
+        // We store the last shown list on suggestionBox._lastList
+        const list = suggestionBox._lastList || [];
+        selectSuggestion(list[idx]);
+      } else {
+        // no focused suggestion -> perform normal search
+        handleSearchButtonClick().catch(() => {});
+      }
+    } else if (e.key === 'Escape') {
+      hideSearchSuggestions();
+    }
+  }
 
   // Utilities
   const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
@@ -309,39 +470,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }).join('');
   };
 
-  // API fetch helper with retry on 429
-  async function fetchWithRetry(url, options = {}, retries = 5, baseDelay = 500) {
+  async function fetchWithRetry(url, options = {}, retries = 3, baseDelay = 700) {
+    // Fast-fail while global rate limiter is active
+    if (isGloballyRateLimited && Date.now() < globalRateLimitUntil) {
+      console.warn('[fetchWithRetry] fast-fail due to global rate limit');
+      throw new Error('Global API rate limit active');
+    }
+
     let attempt = 0;
     while (true) {
-      // If a global rate-limit pause is active, wait first
-      const now = Date.now();
-      if (globalRateLimitUntil > now) {
-        const wait = globalRateLimitUntil - now;
-        console.warn(`[fetchWithRetry] global rate-limit active, waiting ${wait}ms`);
-        await sleep(wait);
-      }
-
       try {
         const res = await fetch(url, options);
 
-        // Handle 429 (rate limit) with Retry-After if present, otherwise exponential backoff
-        if (res.status === 429 && attempt < retries) {
-          attempt++;
+        if (res.status === 429) {
+          // Parse Retry-After header (seconds or HTTP date)
           const ra = res.headers.get('Retry-After');
-          const waitMs = ra ? Number(ra) * 1000 : baseDelay * Math.pow(2, attempt);
-          // set a global pause to prevent other concurrent requests from hammering API
-          globalRateLimitUntil = Date.now() + waitMs;
-          console.warn(`[fetchWithRetry] 429 received, setting global pause ${waitMs}ms (attempt ${attempt})`);
-          await sleep(waitMs + 50); // small cushion
-          continue;
+          let waitMs = baseDelay * Math.pow(2, attempt); // fallback backoff
+          if (ra) {
+            const n = Number(ra);
+            if (!Number.isNaN(n)) waitMs = n * 1000;
+            else {
+              const t = Date.parse(ra);
+              if (!Number.isNaN(t)) waitMs = Math.max(0, t - Date.now());
+            }
+          }
+          // Set global breaker so other callers stop retrying
+          setGlobalRateLimit(waitMs);
+          console.warn(`[fetchWithRetry] 429 received, setting global pause ${waitMs}ms (attempt ${attempt + 1})`);
+          // Fail fast for the caller — let caller decide to retry later
+          throw new Error('API rate limited (429)');
         }
 
-        // Return response for caller to inspect (allow caller to parse text/json and handle non-ok)
         return res;
       } catch (err) {
+        // If error is global rate-limit, rethrow immediately
+        if (err && String(err).includes('rate limited')) throw err;
+
+        // network errors: allow a small number of retries with exponential backoff
         if (attempt >= retries) throw err;
         attempt++;
-        const waitMs = baseDelay * Math.pow(2, attempt);
+        const waitMs = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
         console.warn(`[fetchWithRetry] network error, retrying in ${waitMs}ms (attempt ${attempt})`, err);
         await sleep(waitMs);
       }
@@ -351,41 +519,62 @@ document.addEventListener('DOMContentLoaded', () => {
   async function fetchAPI(path, options = {}) {
     if (!apiRequestsAllowed) throw new Error('API requests are disabled: serve from localhost or start proxy.');
 
+    // Fast-fail when global limiter is active (avoid queuing many requests)
+    if (isGloballyRateLimited && Date.now() < globalRateLimitUntil) {
+      console.warn('[fetchAPI] requested while global rate limit active — failing fast');
+      throw new Error('Global API rate limit active');
+    }
+
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     const opts = { ...options, headers: { ...headers, ...options.headers } };
+    const key = `${(opts.method || 'GET').toUpperCase()}::${url}::${opts.body ? JSON.stringify(opts.body) : ''}`;
 
-    console.debug('[fetchAPI] URL:', url);
-    console.debug('[fetchAPI] Outgoing headers:', opts.headers);
-
-    try {
-      let res = await fetchWithRetry(url, opts, 4, 500);
-      let text = await res.text();
-
-      // If 403 and we're using local proxy, attempt a direct call to official API when token available
-      if (res.status === 403 && usingLocalProxy && API_TOKEN) {
-        try {
-          const directBase = 'https://api.football-data.org/v4/';
-          const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
-          const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
-          console.debug('[fetchAPI] 403 received, retrying directly against official API:', directUrl);
-          res = await fetchWithRetry(directUrl, directOpts, 3, 700);
-          text = await res.text();
-        } catch (directErr) {
-          console.warn('[fetchAPI] direct retry failed', directErr);
-        }
-      }
-
-      if (res.ok) {
-        try { return JSON.parse(text); } catch { return text; }
-      }
-
-      let parsed = text;
-      try { parsed = JSON.parse(text); } catch {}
-      throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`);
-    } catch (err) {
-      // rethrow so callers can handle/display as they currently do
-      throw err;
+    // Dedupe identical requests
+    if (inFlightRequests.has(key)) {
+      return inFlightRequests.get(key);
     }
+
+    const p = (async () => {
+      console.debug('[fetchAPI] URL:', url);
+      console.debug('[fetchAPI] Outgoing headers:', opts.headers);
+      try {
+        const res = await fetchWithRetry(url, opts, 2, 700);
+        const text = await res.text();
+
+        // If 403 and we're using local proxy, attempt a direct call to official API when token available
+        if (res.status === 403 && usingLocalProxy && API_TOKEN) {
+          try {
+            const directBase = 'https://api.football-data.org/v4/';
+            const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
+            const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
+            console.debug('[fetchAPI] 403 received, retrying directly against official API:', directUrl);
+            const directRes = await fetchWithRetry(directUrl, directOpts, 1, 900);
+            const directText = await directRes.text();
+            if (directRes.ok) {
+              try { return JSON.parse(directText); } catch { return directText; }
+            }
+          } catch (directErr) {
+            console.warn('[fetchAPI] direct retry failed', directErr);
+          }
+        }
+
+        if (res.ok) {
+          try { return JSON.parse(text); } catch { return text; }
+        }
+
+        let parsed = text;
+        try { parsed = JSON.parse(text); } catch {}
+        throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`);
+      } catch (err) {
+        // bubble errors so callers can handle; note global-rate errors are set in fetchWithRetry
+        throw err;
+      }
+    })();
+
+    inFlightRequests.set(key, p);
+    // ensure cleanup
+    p.finally(() => inFlightRequests.delete(key));
+    return p;
   }
 
   // Loaders and search handlers
@@ -394,6 +583,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const data = await fetchAPI('/v4/competitions');
       const comps = data.competitions || [];
+      cachedCompetitions = comps;
       populateSelect(competitionsSelect, comps);
       displayCompetitions(comps);
     } catch {
@@ -491,26 +681,58 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function refreshMatches() {
-    if (lastMatchesParams) {
-      try {
-        const data = await fetchAPI(`/v4/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
-        displayMatches(data.matches || []);
-        return;
-      } catch {
-        displayMatches([]);
-      }
+    const selectedDate = (matchDateInput?.value || '').trim();
+    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+
+    const teamId = lastSelectedTeamId;
+    const compId = lastSelectedCompetitionId;
+
+    // If a date is selected and a team is selected
+    if (teamId && selectedDate && isoDateRe.test(selectedDate)) {
+      const matches = await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate });
+      displayMatches(matches || []);
+      return;
     }
+
+    // If a date is selected and a competition is selected
+    if (!teamId && compId && selectedDate && isoDateRe.test(selectedDate)) {
+      const data = await fetchAPI(`/v4/competitions/${compId}/matches?dateFrom=${selectedDate}&dateTo=${selectedDate}`);
+      displayMatches(data.matches || []);
+      return;
+    }
+
+    // If no date is selected, show default matches for team or competition
+    if (teamId) {
+      const matches = await getTeamMatches(teamId);
+      displayMatches(matches || []);
+      return;
+    }
+
+    if (compId) {
+      const data = await fetchAPI(`/v4/competitions/${compId}/matches`);
+      displayMatches(data.matches || []);
+      return;
+    }
+
+    // Fallback: show today's matches
     await loadMatchesForToday();
   }
 
   // Event Handlers
   async function handleCompetitionChange() {
+    // track competition selection, prefer competition for refresh if no team selected
+    lastSelectedCompetitionId = competitionsSelect.value || null;
+    // selecting a competition should clear any previously selected team (unless user then picks a team)
+    lastSelectedTeamId = null;
     await loadTeamsForCompetition(competitionsSelect.value);
   }
 
   async function handleTeamChange() {
     // When a team is selected via the dropdown, load and show its matches.
     const teamId = teamsSelect?.value;
+    // selecting a team should clear any previously selected competition (team takes precedence)
+    lastSelectedTeamId = teamId || null;
+    lastSelectedCompetitionId = null;
     if (!teamId) {
       clearPlayers();
       displayMatches([]);
@@ -519,7 +741,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     clearPlayers(); // keep previous behavior of clearing players area
     try {
-      const matches = await getTeamMatches(teamId);
+      // If a date is selected, prefer loading matches for that date
+      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+      const selectedDate = (matchDateInput?.value || '').trim();
+      const matches = selectedDate && isoDateRe.test(selectedDate)
+        ? await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate })
+        : await getTeamMatches(teamId);
       displayMatches(matches);
       document.getElementById('matches-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
@@ -529,7 +756,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function handleSearchInput() {
-    const q = searchInput.value.trim().toLowerCase();
+    const q = (searchInput.value || '').trim().toLowerCase();
     // If a competition is selected, filter teams client-side
     if (competitionsSelect.value) {
       if (!q) {
@@ -542,10 +769,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // Otherwise, search competitions
     if (!q) {
+      hideSearchSuggestions();
       await loadCompetitions();
       return;
     }
-    await searchCompetitions(q);
+    // Build suggestions: competitions + teams
+    try {
+      // ensure competitions cached
+      if (!cachedCompetitions.length) {
+        const data = await fetchAPI('/v4/competitions');
+        cachedCompetitions = data.competitions || [];
+      }
+    } catch {}
+
+    // Teams: prefer global teams cache, otherwise try to load once (may fail)
+    if (!globalTeamsLoaded) {
+      try {
+        const td = await fetchAPI('/v4/teams'); // may fail on some APIs
+        cachedGlobalTeams = td.teams || [];
+        globalTeamsLoaded = true;
+      } catch { globalTeamsLoaded = true; /* mark loaded to avoid retry spamming */ }
+    }
+
+    const comps = (cachedCompetitions || []).filter(c => c.name?.toLowerCase().includes(q)).slice(0, 5).map(c => ({ type: 'competition', id: c.id, name: c.name, extra: c }));
+    const teamsFromCache = (cachedGlobalTeams || []).concat(cachedTeams || []);
+    const uniqTeams = [];
+    const seenTeamIds = new Set();
+    for (const t of teamsFromCache) {
+      if (!t || !t.id) continue;
+      if (seenTeamIds.has(t.id)) continue;
+      if (t.name?.toLowerCase().includes(q)) {
+        uniqTeams.push({ type: 'team', id: t.id, name: t.name, extra: t });
+        seenTeamIds.add(t.id);
+      }
+      if (uniqTeams.length >= 6) break;
+    }
+
+    const suggestions = [...uniqTeams.slice(0,6), ...comps.slice(0,4)].slice(0,8);
+    // cache last shown list on box and render
+    createSuggestionBox();
+    suggestionBox._lastList = suggestions;
+    showSearchSuggestions(suggestions);
   }
 
   function handleToggleTheme() {
@@ -570,123 +834,85 @@ document.addEventListener('DOMContentLoaded', () => {
   setTheme(savedTheme ? savedTheme === 'dark' : !!prefersDark);
 
   async function handleSearchButtonClick() {
-    const q = searchInput.value.trim().toLowerCase();
-    const scrollTo = id => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    // If empty search, reset to defaults
-    if (!q) {
+    const query = searchInput.value.trim().toLowerCase();
+    if (!query) {
       await loadCompetitions();
       await loadMatchesForToday();
-      scrollTo('competitions-list');
       return;
     }
 
-    // Case 1: Competition is already selected → search teams inside it
-    if (competitionsSelect.value) {
-      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
-      displayTeams(matchingTeams);
-
-      if (matchingTeams.length) {
-        const teamsToFetch = matchingTeams.slice(0, MAX_TEAMS_FETCH);
-        if (teamsToFetch.length < matchingTeams.length) showNotice(`Showing matches for first ${teamsToFetch.length} teams (limited to avoid rate limits)`);
-
-        try {
-          const allMatches = await asyncPool(TEAM_MATCHES_CONCURRENCY, teamsToFetch, async team => await getTeamMatches(team.id));
-          displayMatches(allMatches.flat());
-          scrollTo('matches-list');
-        } catch (err) {
-          console.warn('[search] failed fetching team matches', err);
-          showNotice('Failed to fetch some match data (rate limit). Try again in a moment.');
-          displayMatches([]);
-          scrollTo('teams-list');
-        }
-      } else {
-        displayMatches([]);
-        scrollTo('teams-list');
-      }
-      return;
-    }
-
-    // Case 2: No competition selected → search competitions AND teams globally
-    let competitionsData = [];
-    let allTeams = [];
-
+    // Try to match a team first
     try {
-      const data = await fetchAPI('/v4/competitions');
-      competitionsData = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(q));
-      displayCompetitions(competitionsData);
-      if (competitionsData.length) scrollTo('competitions-list');
+      const teamData = await fetchAPI('/v4/teams'); // ⚠️ Only works if API supports this
+      const matchedTeam = (teamData.teams || []).find(t => t.name?.toLowerCase().includes(query));
+
+      if (matchedTeam) {
+        cachedTeams = [matchedTeam];
+        displayTeams(cachedTeams);
+        lastSelectedTeamId = matchedTeam.id;
+        lastSelectedCompetitionId = null;
+
+        const matches = await getTeamMatches(matchedTeam.id);
+        displayMatches(matches || []);
+        return;
+      }
+    } catch {
+      // fallback to competition search
+    }
+
+    // Try to match a competition
+    try {
+      const compData = await fetchAPI('/v4/competitions');
+      const matchedComp = (compData.competitions || []).find(c => c.name?.toLowerCase().includes(query));
+
+      if (matchedComp) {
+        displayCompetitions([matchedComp]);
+        lastSelectedCompetitionId = matchedComp.id;
+        lastSelectedTeamId = null;
+
+        const data = await fetchAPI(`/v4/competitions/${matchedComp.id}/matches`);
+        displayMatches(data.matches || []);
+        return;
+      }
     } catch {
       displayCompetitions([]);
-      scrollTo('competitions-list');
-    }
-
-    // If competitions matched, fetch their teams
-    if (competitionsData.length) {
-      for (const comp of competitionsData) {
-        try {
-          const data = await fetchAPI(`/v4/competitions/${comp.id}/teams`);
-          const teams = data.teams || [];
-          allTeams.push(...teams);
-        } catch {}
-      }
-    }
-
-    // Always try to search teams globally (even outside matched competitions)
-    try {
-      const data = await fetchAPI('/v4/teams'); // ⚠️ depends on API support
-      const globalTeams = data.teams || [];
-      const teamMatches = globalTeams.filter(t => t.name?.toLowerCase().includes(q));
-      allTeams.push(...teamMatches);
-    } catch {
-      // If API doesn't support /teams, fallback to just competitions
-    }
-
-    // Deduplicate teams by ID
-    const seen = new Set();
-    const uniqueTeams = allTeams.filter(t => {
-      if (!t.id || seen.has(t.id)) return false;
-      seen.add(t.id);
-      return true;
-    });
-
-    cachedTeams = uniqueTeams;
-    displayTeams(uniqueTeams);
-
-    if (uniqueTeams.length) {
-      const teamsToFetch = uniqueTeams.slice(0, MAX_TEAMS_FETCH);
-      if (teamsToFetch.length < uniqueTeams.length) showNotice(`Showing matches for first ${teamsToFetch.length} teams (limited to avoid rate limits)`);
-
-      try {
-        const allMatches = await asyncPool(TEAM_MATCHES_CONCURRENCY, teamsToFetch, async team => await getTeamMatches(team.id));
-        displayMatches(allMatches.flat());
-        scrollTo('matches-list');
-      } catch (err) {
-        console.warn('[search] failed fetching team matches', err);
-        showNotice('Failed to fetch some match data (rate limit). Try again in a moment.');
-        displayMatches([]);
-        // If we have competitions results, show competitions; otherwise show teams section
-        if (competitionsData.length) scrollTo('competitions-list');
-        else scrollTo('teams-list');
-      }
-    } else {
       displayMatches([]);
     }
+
+    // If no match found
+    displayTeams([]);
+    displayCompetitions([]);
+    displayMatches([]);
   }
 
-  async function getTeamMatches(teamId) {
+  // teamId: number/string, opts: { dateFrom, dateTo } (ISO YYYY-MM-DD)
+  async function getTeamMatches(teamId, opts = {}) {
+    if (!teamId) return [];
+    const { dateFrom = '', dateTo = '' } = opts || {};
     const now = Date.now();
-    const cached = teamMatchesCache.get(teamId);
+    const teamKey = `${teamId}::${dateFrom}::${dateTo}`;
+
+    // Check cache
+    const cached = teamMatchesCache.get(teamKey);
     if (cached && cached.expiresAt > now) return cached.data;
-    const inflight = inFlightTeamMatches.get(teamId);
+
+    // In-flight dedupe per teamKey
+    const inflight = inFlightTeamMatches.get(teamKey);
     if (inflight) return inflight;
+
     const p = (async () => {
-      const data = await fetchAPI(`/v4/teams/${teamId}/matches`);
+      // Build query if date filters provided
+      const qs = [];
+      if (dateFrom) qs.push(`dateFrom=${encodeURIComponent(dateFrom)}`);
+      if (dateTo) qs.push(`dateTo=${encodeURIComponent(dateTo)}`);
+      const path = `/v4/teams/${teamId}/matches${qs.length ? `?${qs.join('&')}` : ''}`;
+      const data = await fetchAPI(path);
       const matches = Array.isArray(data) ? data : (data.matches || []);
-      teamMatchesCache.set(teamId, { data: matches, expiresAt: now + TEAM_MATCHES_CACHE_TTL_MS });
+      teamMatchesCache.set(teamKey, { data: matches, expiresAt: now + TEAM_MATCHES_CACHE_TTL_MS });
       return matches;
-    })().finally(() => inFlightTeamMatches.delete(teamId));
-    inFlightTeamMatches.set(teamId, p);
+    })().finally(() => inFlightTeamMatches.delete(teamKey));
+
+    inFlightTeamMatches.set(teamKey, p);
     return p;
   }
 
@@ -697,10 +923,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!teamId) return;
 
     teamsSelect.value = teamId;
+    lastSelectedTeamId = teamId;
+    lastSelectedCompetitionId = null;
 
     // Load and show matches for the clicked team
     try {
-      const matches = await getTeamMatches(teamId);
+      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+      const selectedDate = (matchDateInput?.value || '').trim();
+      const matches = selectedDate && isoDateRe.test(selectedDate)
+        ? await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate })
+        : await getTeamMatches(teamId);
       displayMatches(matches);
       const matchesEl = document.getElementById('matches-list');
       if (matchesEl) matchesEl.scrollIntoView({ behavior: 'smooth' });
@@ -714,9 +946,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Create a single debounced handler for search input
   const debouncedSearchInputHandler = debounce(handleSearchInput, SEARCH_DEBOUNCE_MS);
   searchInput?.addEventListener('input', debouncedSearchInputHandler);
+  searchInput?.addEventListener('keydown', suggestionKeyHandler);
+  // hide suggestions when input loses focus
+  searchInput?.addEventListener('blur', () => { setTimeout(hideSearchSuggestions, 150); });
   searchBtn?.addEventListener('click', handleSearchButtonClick);
   toggleThemeBtn?.addEventListener('click', handleToggleTheme);
   document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
+  // Refresh button (loads matches for selected team/competition/date)
+  document.getElementById('refreshBtn')?.addEventListener('click', refreshMatches);
+  // keep today button handler unchanged
   // positionFilter listener removed (player UI removed)
 
   if (matchDateInput) {
@@ -777,4 +1015,4 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     })();
   }
-});
+})
