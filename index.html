@@ -8,68 +8,73 @@
 </head>
 <body class="light-mode">
   <div id="app">
-       <button id="toggleThemeBtn">Switch to Dark Mode</button>
+    <button id="toggleThemeBtn">Switch to Dark Mode</button>
     <h1>Football Search App</h1>
     <p>Welcome to Dean's Football search app. This simple web allows you to search any football team or match in the world.</p>
     <p>The app has been developed as part of my Software Engineer Course to showcase my skills in JavaScript, HTML and CSS.</p>
 
-    <div id="search-container">
-      <form id="searchForm" role="search" aria-label="Search competitions and teams" onsubmit="return false;">
-        <label for="searchInput" class="visually-hidden">Search competitions or teams</label>
-        <input type="search" id="searchInput" name="q" placeholder="Search competitions or teams..." aria-label="Search competitions or teams" />
-        <!-- use type="button" so JS handles the action and form submit/navigation is prevented -->
-        <button id="searchBtn" type="button" aria-label="Search" title="Search">Search</button>
-      </form>
-    </div>
+    <!-- Layout: sidebar (competitions) + main content -->
+    <div id="layout">
+      <aside id="sidebar" aria-label="Competitions sidebar">
+        <label for="competitions">Select competitions or all will show by default.</label>
+        <select id="competitions" aria-label="Competitions select">
+          <option value="">Select Competitions</option>
+        </select>
 
-    <select id="competitions"><label> Select compeitions or all will show by default.</label>
-      <option value="">Select Competitions</option>
-    </select>
-
-    <select id="teams">
-      <option value="">Select Teams</option>
-    </select>
-
-    <!-- <ul id="squad"></ul>  -->
-
-    <!-- Matches of the Day section -->
-    <section id="matches-section" aria-labelledby="matches-heading">
-      <div class="matches-header">
-        <h2 id="matches-heading">Matches of the Day</h2>
-        <div class="matches-controls">
-          <span id="matchesDate" aria-live="polite"></span>
-
-          <!-- Date filter input (added) -->
-          <label for="matchDate" class="visually-hidden">Filter matches by date</label>
-          <input id="matchDate" type="date" aria-label="Filter matches by date" />
-
-          <!-- changed id to match optional JS variable (todayMatchesBtn) and avoid duplicate naming -->
-          <button id="todayMatchesBtn" type="button">Refresh</button>
+        <!-- competitions-list moved here so sidebar shows both the dropdown and rendered list -->
+        <div id="competitions-list" class="competitions-list">
+          <!-- populated dynamically -->
         </div>
-      </div>
+      </aside>
 
-      <div id="matches-container">
-        <!-- populated by JS: either match cards or a list -->
-        <!-- id changed to kebab-case to match JS: getElementById('matches-list') -->
-        <ul id="matches-list" class="matches-list">
-          <!-- Example placeholder (remove when JS fills in) -->
-          <li class="match-placeholder">No matches loaded. Click Refresh to fetch matches.</li>
-        </ul>
-      </div>
-    </section>
+      <main id="main-content">
+        <!-- Search area -->
+        <div id="search-container">
+          <form id="searchForm" role="search" aria-label="Search competitions and teams" onsubmit="return false;">
+            <label for="searchInput" class="visually-hidden">Search competitions or teams</label>
+            <input type="search" id="searchInput" name="q" placeholder="Search competitions or teams..." aria-label="Search competitions or teams" />
+            <button id="searchBtn" type="button" aria-label="Search" title="Search">Search</button>
+          </form>
+        </div>
 
-    <!-- Results will be displayed here -->
-    <div id="results-container">
-      <div id="competitions-list"></div>
-      <div id="teams-list"></div>
-      <div id="players-list"></div>
+        <!-- Teams select remains in main content -->
+        <select id="teams" aria-label="Teams select">
+          <option value="">Select Teams</option>
+        </select>
+
+        <!-- Matches of the Day section -->
+        <section id="matches-section" aria-labelledby="matches-heading">
+          <div class="matches-header">
+            <h2 id="matches-heading">Matches of the Day</h2>
+            <div class="matches-controls">
+              <label for="matchDate" class="visually-hidden">Filter matches by date</label>
+              <input id="matchDate" type="date" aria-label="Filter matches by date" />
+              <button id="todayMatchesBtn" type="button">Refresh</button>
+            </div>
+          </div>
+
+          <div id="matches-container">
+            <ul id="matches-list" class="matches-list">
+              <li class="match-placeholder">No matches loaded. Click Refresh to fetch matches.</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- Results will be displayed here (competitions-list removed from here) -->
+        <div id="results-container">
+          <div id="teams-list"></div>
+          <div id="players-list"></div>
+        </div>
+      </main>
     </div>
   </div>
+
   <script src="./src/env.local.js"></script>
   <script src="src/index.js"></script>
 
   <footer>
     <p>&copy; 2025 Dean's Football App.</p>
   </footer>
+    </div>
 </body>
 </html>

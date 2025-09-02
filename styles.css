@@ -440,3 +440,77 @@ button.secondary:hover { background: rgba(0,0,0,0.07); }
   padding:10px 10px;
   display: inline-block;
 }
+
+/* =========================
+   LAYOUT: SIDEBAR + MAIN CONTENT
+   ========================= */
+#layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+/* Sidebar styling for competitions */
+#sidebar {
+  background: var(--surface-2);
+  padding: 1rem;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  height: fit-content;
+  overflow: auto;
+  box-sizing: border-box;
+  align-self: start; /* avoid stretching in grid rows */
+
+  /* responsive-friendly sizing to prevent overlap with main column:
+     let the sidebar fill its column but cap its width so it can't exceed
+     the available space; use a reasonable minimum. */
+  width: 120%;
+  max-width: 360px;
+  min-width: 220px;
+}
+
+/* Keep sidebar full-width on narrow screens (matches existing responsive breakpoint) */
+@media (max-width: 900px) {
+  #sidebar {
+    width: 100%;
+    min-width: auto;
+    max-width: none;
+  }
+}
+/* place main content on the left, sidebar on the right */
+#layout {
+  grid-template-columns: 1fr 800px;
+}
+/* make the main content sit beside the sidebar and avoid overlap */
+#main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;    /* take remaining grid space */
+  width: 100%;
+  min-width: 0;      /* allow content to shrink inside the grid (prevents overflow/overlap) */
+  box-sizing: border-box;
+  overflow: visible;
+}
+
+/* ensure competitions-list inside sidebar looks tidy */
+#competitions-list {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+/* Responsive: stack sidebar under main content on narrow screens */
+@media (max-width: 900px) {
+  #layout {
+    grid-template-columns: 1fr;
+  }
+  #sidebar {
+    order: 2;
+    width: 100%;
+  }
+  #main-content {
+    order: 1;
+  }
+}
