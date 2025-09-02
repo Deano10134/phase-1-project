@@ -17,117 +17,97 @@ document.addEventListener('DOMContentLoaded', () => {
   const SEARCH_DEBOUNCE_MS = 300;
   let lastMatchesParams = null;
   const TEAM_MATCHES_CACHE_TTL_MS = 60_000;
-  const teamMatchesCache = new Map(); // key: teamId, val: { data, expiresAt }
-  const inFlightTeamMatches = new Map(); // key: teamKey, val: Promise
-
-  // Track last selected team (from dropdown or card) so refresh can target it
+  const teamMatchesCache = new Map();
+  const inFlightTeamMatches = new Map();
   let lastSelectedTeamId = null;
-  // Track last selected competition so refresh can target it when no team is chosen
   let lastSelectedCompetitionId = null;
-
-  // Dedupe identical outgoing API requests to avoid parallel retries causing 429 storms
-  const inFlightRequests = new Map(); // key: method::url::body, val: Promise
-
-  // Global circuit-breaker for API rate limiting.
-  // When true, fetchAPI / fetchWithRetry will fail fast until reset.
+  const inFlightRequests = new Map();
   let isGloballyRateLimited = false;
-  let globalRateLimitUntil = 0; // timestamp ms
+  let globalRateLimitUntil = 0;
   let _globalRateLimitTimer = null;
 
-  function setGlobalRateLimit(waitMs) {
-    try {
-      isGloballyRateLimited = true;
-      globalRateLimitUntil = Date.now() + Math.max(0, Number(waitMs) || 0);
-      clearTimeout(_globalRateLimitTimer);
-      _globalRateLimitTimer = setTimeout(() => {
-        isGloballyRateLimited = false;
-        globalRateLimitUntil = 0;
-      }, (globalRateLimitUntil - Date.now()) + 50);
-      try { showNotice && showNotice('API rate limit active — backing off'); } catch {}
-      console.warn(`[rate-limit] global pause set for ${waitMs}ms`);
-    } catch (e) { /* ignore */ }
-  }
-
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-  // Add: helper to fetch quotes + likes from local JSON server (http://localhost:3000)
-  // Usage: window.tchQuotes().then(quotes => { ... })
-  async function tchQuotes() {
-    const base = 'http://localhost:3000';
-    try {
-      const res = await fetch(`${base}/quotes`);
-      if (!res.ok) throw new Error(`Quotes fetch failed: ${res.status}`);
-      const quotes = await res.json();
-
-      // For each quote, fetch likes separately
-      await Promise.all(quotes.map(async q => {
-        try {
-          const r = await fetch(`${base}/likes?quoteId=${encodeURIComponent(q.id)}`);
-          q.likes = r.ok ? await r.json() : [];
-        } catch (e) {
-          console.warn('Failed to fetch likes for quote', q.id, e);
-          q.likes = [];
-        }
-      }));
-
-      return quotes;
-    } catch (err) {
-      console.warn('tchQuotes error', err);
-      return [];
+  // DRY constants / helpers
+  const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+  const formatDate = d => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d || ''));
+  const createElement = (tag, attrs = {}, styles = {}) => {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => { if (v != null) el.setAttribute(k, String(v)); });
+    Object.assign(el.style, styles);
+    return el;
+  };
+  const updateThemeUI = isDark => {
+    document.body.classList.toggle('dark-mode', isDark);
+    document.body.classList.toggle('light-mode', !isDark);
+    if (toggleThemeBtn) {
+      toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
+      toggleThemeBtn.setAttribute('aria-pressed', String(isDark));
+      toggleThemeBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
     }
-  }
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+  };
+  const safeFetchAPI = (path, fallback = {}) => fetchAPI(path).catch(e => { console.warn(`safeFetchAPI ${path} failed`, e); return fallback; });
+  const displayEmptyMatches = () => { displayMatches([]); setMatchesDateLabel(null); };
+  const fetchMatchesForTeam = async (teamId, date) => date && ISO_DATE_REGEX.test(date) ? await getTeamMatches(teamId, { dateFrom: date, dateTo: date }) : await getTeamMatches(teamId);
+  const setGlobalRateLimit = waitMs => {
+    isGloballyRateLimited = true;
+    globalRateLimitUntil = Date.now() + Math.max(0, Number(waitMs) || 0);
+    clearTimeout(_globalRateLimitTimer);
+    _globalRateLimitTimer = setTimeout(() => { isGloballyRateLimited = false; globalRateLimitUntil = 0; }, globalRateLimitUntil - Date.now() + 50);
+    showNotice('API rate limit active — backing off');
+  };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => { let timeoutId; return (...args) => { clearTimeout(timeoutId); timeoutId = setTimeout(() => fn(...args), ms); }; };
+  const getTodayStr = () => new Date().toISOString().slice(0, 10);
+  const setMatchesDateLabel = (from, to = from) => {
+    const el = document.getElementById('matchesDate');
+    if (!el) return;
+    if (!from) { el.textContent = ''; return; }
+    el.textContent = from === to ? new Date(from).toLocaleDateString() : `${new Date(from).toLocaleDateString()} — ${new Date(to).toLocaleDateString()}`;
+  };
+  const normalizeItems = (data, keys = ['teams', 'competitions', 'items', 'matches']) => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    for (const key of keys) if (Array.isArray(data[key])) return data[key];
+    return [];
+  };
+  const populateSelect = (select, data, valueKey = 'id', textKey = 'name') => {
+    if (!select) return;
+    const items = normalizeItems(data);
+    select.innerHTML = items.length ? `<option value="">Select</option>${items.map(i => `<option value="${i[valueKey]}">${i[textKey] || ''}</option>`).join('')}` : '<option value="">No items</option>';
+  };
+  const getFirstValidUrl = (obj, candidates) => {
+    if (!obj) return '';
+    for (const key of candidates) {
+      const v = obj[key];
+      if (typeof v === 'string' && v.trim()) return v;
+      if (v && typeof v === 'object' && typeof v.url === 'string' && v.url.trim()) return v.url;
+    }
+    if (Array.isArray(obj.photos) && obj.photos[0]?.url) return obj.photos[0].url;
+    return '';
+  };
+  const getCompetitionLogoUrl = c => getFirstValidUrl(c, ['emblemUrl', 'logo', 'crestUrl', 'ensignUrl']);
+  const getTeamCrestUrl = t => getFirstValidUrl(t, ['crestUrl', 'crest', 'logo']);
+  const clearPlayers = () => { const container = document.getElementById('players-list'); if (container) container.innerHTML = ''; };
+  const showNotice = (msg, timeout = 4000) => {
+    let b = document.getElementById('notice-banner');
+    if (!b) {
+      b = createElement('div', { id: 'notice-banner' }, { position: 'fixed', top: '12px', right: '12px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '8px 12px', borderRadius: '6px', zIndex: '9999', fontFamily: 'system-ui,Arial,sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' });
+      document.body.appendChild(b);
+    }
+    b.textContent = msg;
+    b.style.display = 'block';
+    clearTimeout(b._hideTimeout);
+    b._hideTimeout = setTimeout(() => { b.style.display = 'none'; }, timeout);
+  };
 
-  // expose for quick debugging / usage
-  try { window.tchQuotes = tchQuotes; } catch (e) { /* ignore in restrictive envs */ }
-
-  // API config and checks
+  // API config
   const API_BASE = 'http://localhost:8010/proxy';
-  (function injectLocalApiToken() {
-    try {
-      const isLocal = window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname);
-      if (!isLocal) return;
-      window.__env = window.__env || {};
-      if (!window.__env.API_TOKEN) {
-        window.__env.API_TOKEN = '104f5355e36b413cbadcc412e056d366';
-        // Allow the existing startup code to read the token, then delete it quickly.
-        setTimeout(() => { try { delete window.__env.API_TOKEN; } catch (e) {} }, 100);
-        console.warn('Local API token injected for development. Do NOT commit this token.');
-      }
-    } catch (e) { /* ignore */ }
-  })();
-
-  (function loadLocalEnvScript() {
-    try {
-      // don't try to load env script when running from file:// (causes noisy file:// 404s)
-      if (window.location.protocol === 'file:') return;
-
-      const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-      if (!isLocal) return;
-
-      const candidates = ['./generate-env.js', './src/generate-env.js', '/src/generate-env.js'];
-      const head = document.head || document.getElementsByTagName('head')[0];
-      const tryLoad = (i) => {
-        if (i >= candidates.length) return;
-        const s = document.createElement('script');
-        s.src = candidates[i];
-        s.async = false;
-        s.onload = () => {
-          // allow startup code to read token briefly, then remove to reduce exposure
-          setTimeout(() => { try { if (window._env_) delete window._env_.API_TOKEN; } catch (e) {} }, 250);
-        };
-        s.onerror = () => { tryLoad(i + 1); };
-        head.appendChild(s);
-      };
-      tryLoad(0);
-    } catch (e) { /* ignore in production */ }
-  })();
-  
   const API_TOKEN = (() => {
     if (typeof process !== 'undefined' && process.env && process.env.API_TOKEN) return process.env.API_TOKEN;
     if (typeof window !== 'undefined') {
       if (window.__env?.API_TOKEN) return window.__env.API_TOKEN;
       if (window._env_?.API_TOKEN) return window._env_.API_TOKEN;
-      if (window.VITE_API_TOKEN) return window.VITE_API_TOKEN; // Vite legacy/global pattern
+      if (window.VITE_API_TOKEN) return window.VITE_API_TOKEN;
     }
     return '';
   })();
@@ -135,61 +115,33 @@ document.addEventListener('DOMContentLoaded', () => {
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const usingLocalProxy = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
   const apiRequestsAllowed = usingLocalProxy || (!isFileProtocol && isLocalhost);
+  const headers = { Accept: 'application/json', ...(API_TOKEN && { 'X-Auth-Token': API_TOKEN }) };
 
   if (!apiRequestsAllowed) {
-    const banner = document.createElement('div');
-    banner.id = 'cors-warning';
-    banner.style.cssText = 'background:#ffefc2;border:1px solid #f0c36d;padding:12px;margin:8px;font-family:system-ui,Arial,sans-serif;';
-    banner.innerHTML = `
-      <strong>CORS / Origin mismatch</strong> — serve from http://localhost or run proxy at http://localhost:3000.<br>
-      Examples: <code>python -m http.server 8000</code> or <code>npx serve .</code><br>
-      Start proxy server and reload.
-    `;
+    const banner = createElement('div', { id: 'cors-warning' }, { background: '#ffefc2', border: '1px solid #f0c36d', padding: '12px', margin: '8px', fontFamily: 'system-ui,Arial,sans-serif' });
+    banner.innerHTML = '<strong>CORS / Origin mismatch</strong> — serve from http://localhost or run proxy at http://localhost:3000.<br>Examples: <code>python -m http.server 8000</code> or <code>npx serve .</code><br>Start proxy server and reload.';
     document.body.insertBefore(banner, document.body.firstChild);
   }
 
-  const headers = { Accept: 'application/json', ...(API_TOKEN && { 'X-Auth-Token': API_TOKEN }) };
-
-  // --- Search suggestions UI state ---
+  // Search suggestions
   let suggestionBox = null;
   let suggestionItems = [];
   let suggestionFocused = -1;
-
-  function createSuggestionBox() {
+  const createSuggestionBox = () => {
     if (suggestionBox) return suggestionBox;
-    suggestionBox = document.createElement('div');
-    suggestionBox.id = 'search-suggestions';
-    suggestionBox.style.cssText = [
-      'position: absolute',
-      'z-index: 9998',
-      'background: #fff',
-      'border: 1px solid rgba(0,0,0,0.12)',
-      'box-shadow: 0 6px 18px rgba(0,0,0,0.08)',
-      'max-height:240px',
-      'overflow:auto',
-      'min-width:220px',
-      'font-family:system-ui,Arial,sans-serif'
-    ].join(';');
+    suggestionBox = createElement('div', { id: 'search-suggestions' }, { position: 'absolute', zIndex: '9998', background: '#fff', border: '1px solid rgba(0,0,0,0.12)', boxShadow: '0 6px 18px rgba(0,0,0,0.08)', maxHeight: '240px', overflow: 'auto', minWidth: '220px', fontFamily: 'system-ui,Arial,sans-serif' });
     document.body.appendChild(suggestionBox);
     return suggestionBox;
-  }
-
-  function positionSuggestionBox() {
+  };
+  const positionSuggestionBox = () => {
     if (!suggestionBox || !searchInput) return;
     const r = searchInput.getBoundingClientRect();
     suggestionBox.style.left = `${r.left + window.scrollX}px`;
     suggestionBox.style.top = `${r.bottom + window.scrollY + 6}px`;
     suggestionBox.style.width = `${Math.max(220, r.width)}px`;
-  }
-
-  function hideSearchSuggestions() {
-    if (!suggestionBox) return;
-    suggestionBox.style.display = 'none';
-    suggestionItems = [];
-    suggestionFocused = -1;
-  }
-
-  function showSearchSuggestions(list) {
+  };
+  const hideSearchSuggestions = () => { if (suggestionBox) suggestionBox.style.display = 'none'; suggestionItems = []; suggestionFocused = -1; };
+  const showSearchSuggestions = list => {
     createSuggestionBox();
     positionSuggestionBox();
     if (!list || !list.length) { hideSearchSuggestions(); return; }
@@ -201,71 +153,46 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>`;
     }).join('');
     suggestionBox.style.display = 'block';
-
-    // attach pointer handlers
     Array.from(suggestionBox.querySelectorAll('.sugg-item')).forEach(el => {
-      el.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault(); // prevent blur before click
+      el.addEventListener('pointerdown', ev => {
+        ev.preventDefault();
         const idx = Number(el.getAttribute('data-idx'));
         const sel = list[idx];
         if (sel) selectSuggestion(sel);
       });
     });
-  }
-
-  function escapeHtml(s='') { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-  async function selectSuggestion(item) {
+  };
+  const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const selectSuggestion = async item => {
     if (!item) return hideSearchSuggestions();
-    // Populate input
     searchInput.value = item.name;
     hideSearchSuggestions();
-
-    // If team selected -> load team matches (honor date input)
     if (item.type === 'team') {
       lastSelectedTeamId = item.id;
       lastSelectedCompetitionId = null;
-      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
       const selectedDate = (matchDateInput?.value || '').trim();
-      const matches = (selectedDate && isoDateRe.test(selectedDate))
-        ? await getTeamMatches(item.id, { dateFrom: selectedDate, dateTo: selectedDate })
-        : await getTeamMatches(item.id);
+      const matches = await fetchMatchesForTeam(item.id, selectedDate);
       displayTeams([item.extra || { id: item.id, name: item.name }]);
       displayMatches(matches || []);
-      return;
-    }
-
-    // If competition selected -> load competition matches (honor date input)
-    if (item.type === 'competition') {
+    } else if (item.type === 'competition') {
       lastSelectedCompetitionId = item.id;
       lastSelectedTeamId = null;
-      try {
-        const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
-        const selectedDate = (matchDateInput?.value || '').trim();
-        const path = selectedDate && isoDateRe.test(selectedDate)
-          ? `/v4/competitions/${item.id}/matches?dateFrom=${selectedDate}&dateTo=${selectedDate}`
-          : `/v4/competitions/${item.id}/matches`;
-        const data = await fetchAPI(path);
-        displayCompetitions([item.extra || { id: item.id, name: item.name }]);
-        displayMatches(data.matches || []);
-      } catch {
-        displayMatches([]);
-      }
-      return;
+      const selectedDate = (matchDateInput?.value || '').trim();
+      const path = selectedDate && ISO_DATE_REGEX.test(selectedDate) ? `/v4/competitions/${item.id}/matches?dateFrom=${selectedDate}&dateTo=${selectedDate}` : `/v4/competitions/${item.id}/matches`;
+      const data = await fetchAPI(path);
+      displayCompetitions([item.extra || { id: item.id, name: item.name }]);
+      displayMatches(data.matches || []);
     }
-  }
-
-  function focusNextSuggestion(delta = 1) {
+  };
+  const focusNextSuggestion = delta => {
     const nodes = suggestionBox?.querySelectorAll('.sugg-item') || [];
     if (!nodes.length) return;
     suggestionFocused = (suggestionFocused + delta + nodes.length) % nodes.length;
     nodes.forEach(n => n.style.background = '');
     const el = nodes[suggestionFocused];
     if (el) el.style.background = 'rgba(0,0,0,0.04)';
-  }
-
-  // Key handler for suggestion navigation
-  function suggestionKeyHandler(e) {
+  };
+  const suggestionKeyHandler = e => {
     if (!suggestionBox || suggestionBox.style.display === 'none') return;
     if (e.key === 'ArrowDown') { e.preventDefault(); focusNextSuggestion(1); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); focusNextSuggestion(-1); }
@@ -274,167 +201,31 @@ document.addEventListener('DOMContentLoaded', () => {
       const nodes = suggestionBox.querySelectorAll('.sugg-item');
       if (nodes[suggestionFocused]) {
         const idx = Number(nodes[suggestionFocused].getAttribute('data-idx'));
-        // rebuild last suggestions list from DOM (index maps)
-        // We store the last shown list on suggestionBox._lastList
         const list = suggestionBox._lastList || [];
         selectSuggestion(list[idx]);
       } else {
-        // no focused suggestion -> perform normal search
         handleSearchButtonClick().catch(() => {});
       }
-    } else if (e.key === 'Escape') {
-      hideSearchSuggestions();
-    }
-  }
-
-  // Utilities
-  const debounce = (fn, ms = SEARCH_DEBOUNCE_MS) => {
-    let timeoutId;
-    return (...args) => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => fn(...args), ms);
-    };
+    } else if (e.key === 'Escape') hideSearchSuggestions();
   };
 
-  // return YYYY-MM-DD for today
-  const getTodayStr = () => new Date().toISOString().slice(0, 10);
-
-  // Update the matches date label in the header and optionally set the date input value
-  function setMatchesDateLabel(from, to = from) {
-    const el = document.getElementById('matchesDate');
-    if (!el) return;
-    if (!from) {
-      el.textContent = '';
-      return;
-    }
-    if (from === to) {
-      el.textContent = new Date(from).toLocaleDateString();
-    } else {
-      el.textContent = `${new Date(from).toLocaleDateString()} — ${new Date(to).toLocaleDateString()}`;
-    }
-  }
-
-  const normalizeItems = (data, keys = ['teams', 'competitions', 'items', 'matches']) => {
-    if (!data) return [];
-    if (Array.isArray(data)) return data;
-    for (const key of keys) if (Array.isArray(data[key])) return data[key];
-    return [];
-  };
-
-  const populateSelect = (select, data, valueKey = 'id', textKey = 'name') => {
-    if (!select) return;
-    const items = normalizeItems(data);
-    select.innerHTML = items.length
-      ? `<option value="">Select</option>${items.map(i => `<option value="${i[valueKey]}">${i[textKey] || ''}</option>`).join('')}`
-      : '<option value="">No items</option>';
-  };
-
-  // Extract URLs for logos/crests/photos
-  const getFirstValidUrl = (obj, candidates) => {
-    if (!obj) return '';
-    for (const key of candidates) {
-      const v = obj[key];
-      if (typeof v === 'string' && v.trim()) return v;
-      if (v && typeof v === 'object' && typeof v.url === 'string' && v.url.trim()) return v.url;
-    }
-    if (Array.isArray(obj.photos) && obj.photos[0]?.url) return obj.photos[0].url;
-    return '';
-  };
-
-  const getCompetitionLogoUrl = c => getFirstValidUrl(c, ['emblemUrl', 'logo', 'crestUrl', 'ensignUrl']);
-  const getTeamCrestUrl = t => getFirstValidUrl(t, ['crestUrl', 'crest', 'logo']);
-  // players removed: no player photos needed
-
-  // Clear players area helper (replaces previous displayPlayers usage)
-  const clearPlayers = () => {
-    const container = document.getElementById('players-list');
-    if (!container) return;
-    container.innerHTML = '';
-  };
-  
-  // concurrency helper (limits parallel requests if needed)
-  async function asyncPool(poolLimit, array, iteratorFn) {
-    if (!Array.isArray(array) || !array.length) return [];
-    poolLimit = Math.max(1, Math.floor(poolLimit) || 1);
-
-    const ret = [];
-    const executing = [];
-
-    for (const item of array) {
-      const p = Promise.resolve().then(() => iteratorFn(item));
-      ret.push(p);
-
-      const e = p.then(() => {
-        const idx = executing.indexOf(e);
-        if (idx >= 0) executing.splice(idx, 1);
-      }).catch(() => {
-        const idx = executing.indexOf(e);
-        if (idx >= 0) executing.splice(idx, 1);
-      });
-
-      executing.push(e);
-
-      if (executing.length >= poolLimit) {
-        // wait for at least one to finish before queuing more
-        await Promise.race(executing);
-      }
-    }
-
-    return Promise.all(ret);
-  }
-
-  // small UI helper to show transient notices (used when we trim results to avoid rate limits)
-  function showNotice(msg, timeout = 4000) {
-    let b = document.getElementById('notice-banner');
-    if (!b) {
-      b = document.createElement('div');
-      b.id = 'notice-banner';
-      b.style.cssText = [
-        'position:fixed',
-        'top:12px',
-        'right:12px',
-        'background:rgba(0,0,0,0.8)',
-        'color:#fff',
-        'padding:8px 12px',
-        'border-radius:6px',
-        'z-index:9999',
-        'font-family:system-ui,Arial,sans-serif',
-        'box-shadow:0 4px 12px rgba(0,0,0,0.15)'
-      ].join(';');
-      document.body.appendChild(b);
-    }
-    b.textContent = msg;
-    b.style.display = 'block';
-    clearTimeout(b._hideTimeout);
-    b._hideTimeout = setTimeout(() => { b.style.display = 'none'; }, timeout);
-  }
-
-  // Display functions (competitions, teams, matches)
-  const renderCards = (containerId, items, options) => {
+  // Display functions
+  const renderCards = (containerId, items, { title, getImageUrl, imgClass, cardClass, valueKey, textKey, dataAttr }) => {
     const container = document.getElementById(containerId);
     if (!container) return;
     const normalized = normalizeItems(items);
     if (!normalized.length) {
-      container.innerHTML = `<h2>${options.title}</h2><p>No ${options.title.toLowerCase()} found.</p>`;
+      container.innerHTML = `<h2>${title}</h2><p>No ${title.toLowerCase()} found.</p>`;
       return;
     }
-    container.innerHTML = `<h2>${options.title}</h2>` + normalized.map(i => {
-      const imgUrl = options.getImageUrl(i);
-      const img = imgUrl ? `<img src="${imgUrl}" alt="${options.alt || options.title} image" class="${options.imgClass}" onerror="this.style.display='none'">` : '';
-      return `
-        <div class="${options.cardClass}" ${options.dataAttr ? `data-${options.dataAttr}="${i[options.valueKey]}"` : ''}>
-          ${img}
-          <strong>${i[options.textKey] || ''}</strong>
-        </div>`;
+    container.innerHTML = `<h2>${title}</h2>` + normalized.map(i => {
+      const imgUrl = getImageUrl(i);
+      const img = imgUrl ? `<img src="${imgUrl}" alt="${title} image" class="${imgClass}" onerror="this.style.display='none'">` : '';
+      return `<div class="${cardClass}" ${dataAttr ? `data-${dataAttr}="${i[valueKey]}"` : ''}>${img}<strong>${i[textKey] || ''}</strong></div>`;
     }).join('');
   };
-
-  const displayCompetitions = competitions =>
-    renderCards('competitions-list', competitions, { title: 'Competitions', getImageUrl: getCompetitionLogoUrl, imgClass: 'competition-logo', cardClass: 'competition-card', valueKey: 'id', textKey: 'name', dataAttr: 'competition-id' });
-
-  const displayTeams = teams =>
-    renderCards('teams-list', teams, { title: 'Teams', getImageUrl: getTeamCrestUrl, imgClass: 'team-crest', cardClass: 'team-card', valueKey: 'id', textKey: 'name', dataAttr: 'team-id' });
-
+  const displayCompetitions = competitions => renderCards('competitions-list', competitions, { title: 'Competitions', getImageUrl: getCompetitionLogoUrl, imgClass: 'competition-logo', cardClass: 'competition-card', valueKey: 'id', textKey: 'name', dataAttr: 'competition-id' });
+  const displayTeams = teams => renderCards('teams-list', teams, { title: 'Teams', getImageUrl: getTeamCrestUrl, imgClass: 'team-crest', cardClass: 'team-card', valueKey: 'id', textKey: 'name', dataAttr: 'team-id' });
   const displayMatches = matches => {
     const container = document.getElementById('matches-list');
     if (!container) return;
@@ -443,15 +234,8 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '<h2>Matches</h2><p>No matches for the selected date.</p>';
       return;
     }
-
     const findTeamInCache = id => cachedTeams.find(t => String(t.id) === String(id) || String(t.team?.id) === String(id));
-
-    const formatDateTime = d => {
-      try {
-        return new Date(d).toLocaleString();
-      } catch { return d || ''; }
-    };
-
+    const formatDateTime = d => { try { return new Date(d).toLocaleString(); } catch { return d || ''; } };
     container.innerHTML = '<h2>Matches</h2>' + items.map(m => {
       const { competition, homeTeam, awayTeam, score, utcDate, date, homeTeamId, awayTeamId } = m;
       const comp = competition?.name || competition || '';
@@ -460,175 +244,79 @@ document.addEventListener('DOMContentLoaded', () => {
       const awayName = awayTeam?.name || `Team ${awayTeamId || ''}`;
       const fullTimeScore = score?.fullTime;
       const scoreStr = fullTimeScore ? `${fullTimeScore.home ?? ''} - ${fullTimeScore.away ?? ''}` : '';
-
-      const homeCrestFromMatch = getTeamCrestUrl(homeTeam);
-      const awayCrestFromMatch = getTeamCrestUrl(awayTeam);
-
-      const homeCached = findTeamInCache(homeTeamId);
-      const awayCached = findTeamInCache(awayTeamId);
-
-      const homeCrest = homeCrestFromMatch || (homeCached ? getTeamCrestUrl(homeCached) : '');
-      const awayCrest = awayCrestFromMatch || (awayCached ? getTeamCrestUrl(awayCached) : '');
-
+      const homeCrest = getTeamCrestUrl(homeTeam) || (findTeamInCache(homeTeamId) ? getTeamCrestUrl(findTeamInCache(homeTeamId)) : '');
+      const awayCrest = getTeamCrestUrl(awayTeam) || (findTeamInCache(awayTeamId) ? getTeamCrestUrl(findTeamInCache(awayTeamId)) : '');
       const homeImg = homeCrest ? `<img src="${homeCrest}" alt="${homeName} crest" class="team-crest-small" onerror="this.style.display='none'">` : '';
       const awayImg = awayCrest ? `<img src="${awayCrest}" alt="${awayName} crest" class="team-crest-small" onerror="this.style.display='none'">` : '';
-
-      return `
-        <div class="match-card">
-          <div class="teams home">
-            ${homeImg}
-            <span class="team-name">${homeName}</span>
-          </div>
-          <div class="score">${scoreStr || '&nbsp;'}</div>
-          <div class="teams away">
-            ${awayImg}
-            <span class="team-name">${awayName}</span>
-          </div>
-          <div class="meta">
-            <span>${comp || ''}</span>
-            <span>${time}</span>
-          </div>
-        </div>`;
+      return `<div class="match-card"><div class="teams home">${homeImg}<span class="team-name">${homeName}</span></div><div class="score">${scoreStr || '&nbsp;'}</div><div class="teams away">${awayImg}<span class="team-name">${awayName}</span></div><div class="meta"><span>${comp || ''}</span><span>${time}</span></div></div>`;
     }).join('');
   };
 
-  async function fetchWithRetry(url, options = {}, retries = 3, baseDelay = 700) {
+  // API functions
+  const fetchWithRetry = async (url, options = {}, retries = 3, baseDelay = 700) => {
     let attempt = 0;
     while (attempt < retries) {
-        try {
-            // Check if the global rate limit is active and wait if necessary
-            const now = Date.now();
-            if (isGloballyRateLimited && now < globalRateLimitUntil) {
-                const waitTime = globalRateLimitUntil - now;
-                console.log(`[fetchWithRetry] Pausing for global rate limit... Waiting ${waitTime}ms.`);
-                await sleep(waitTime);
-            }
-
-            const res = await fetch(url, options);
-
-            // If a 429 is received, apply the global pause and retry
-            if (res.status === 429) {
-                const retryAfterHeader = res.headers.get('Retry-After');
-                let waitMs = baseDelay;
-                if (retryAfterHeader) {
-                    const n = Number(retryAfterHeader);
-                    if (!isNaN(n)) {
-                        waitMs = n * 1000; // API specifies seconds
-                    } else {
-                        // Handle case where Retry-After is a date string
-                        const date = Date.parse(retryAfterHeader);
-                        if (!isNaN(date)) {
-                            waitMs = Math.max(0, date - now);
-                        }
-                    }
-                }
-                setGlobalRateLimit(waitMs);
-                console.warn(`[fetchWithRetry] 429 received, setting global pause ${waitMs}ms (attempt ${attempt + 1})`);
-                await sleep(waitMs);
-                attempt++;
-                continue; // Skip the rest of the loop and try again
-            }
-
-            // For successful or other non-429 responses
-            return res;
-
-        } catch (err) {
-            // Handle network errors, not API status codes
-            if (attempt >= retries - 1) throw err;
-            attempt++;
-            const waitMs = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
-            console.warn(`[fetchWithRetry] Network error, retrying in ${waitMs}ms (attempt ${attempt})`, err);
-            await sleep(waitMs);
+      if (isGloballyRateLimited && Date.now() < globalRateLimitUntil) await sleep(globalRateLimitUntil - Date.now());
+      const res = await fetch(url, options);
+      if (res.status === 429) {
+        const retryAfter = res.headers.get('Retry-After');
+        let waitMs = baseDelay;
+        if (retryAfter) {
+          const n = Number(retryAfter);
+          waitMs = !isNaN(n) ? n * 1000 : (Date.parse(retryAfter) - Date.now()) || waitMs;
         }
+        setGlobalRateLimit(waitMs);
+        await sleep(waitMs);
+        attempt++;
+        continue;
+      }
+      return res;
     }
     throw new Error(`Failed to fetch after ${retries} attempts.`);
-  }
-
-  async function fetchAPI(path, options = {}) {
-    if (!apiRequestsAllowed) throw new Error('API requests are disabled: serve from localhost or start proxy.');
-
-    // Fast-fail when global limiter is active (avoid queuing many requests)
-    if (isGloballyRateLimited && Date.now() < globalRateLimitUntil) {
-      console.warn('[fetchAPI] requested while global rate limit active — failing fast');
-      throw new Error('Global API rate limit active');
-    }
-
+  };
+  const fetchAPI = async (path, options = {}) => {
+    if (!apiRequestsAllowed) throw new Error('API requests are disabled.');
+    if (isGloballyRateLimited && Date.now() < globalRateLimitUntil) throw new Error('Global API rate limit active');
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     const opts = { ...options, headers: { ...headers, ...options.headers } };
     const key = `${(opts.method || 'GET').toUpperCase()}::${url}::${opts.body ? JSON.stringify(opts.body) : ''}`;
-
-    // Dedupe identical requests
-    if (inFlightRequests.has(key)) {
-      return inFlightRequests.get(key);
-    }
-
+    if (inFlightRequests.has(key)) return inFlightRequests.get(key);
     const p = (async () => {
-      console.debug('[fetchAPI] URL:', url);
-      console.debug('[fetchAPI] Outgoing headers:', opts.headers);
-      try {
-        const res = await fetchWithRetry(url, opts, 2, 700);
-        const text = await res.text();
-
-        // If 403 and we're using local proxy, attempt a direct call to official API when token available
-        if (res.status === 403 && usingLocalProxy && API_TOKEN) {
-          try {
-            const directBase = 'https://api.football-data.org/v4/';
-            const directUrl = path.startsWith('http') ? path : `${directBase}${path}`;
-            const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
-            console.debug('[fetchAPI] 403 received, retrying directly against official API:', directUrl);
-            const directRes = await fetchWithRetry(directUrl, directOpts, 1, 900);
-            const directText = await directRes.text();
-            if (directRes.ok) {
-              try { return JSON.parse(directText); } catch { return directText; }
-            }
-          } catch (directErr) {
-            console.warn('[fetchAPI] direct retry failed', directErr);
-          }
-        }
-
-        if (res.ok) {
-          try { return JSON.parse(text); } catch { return text; }
-        }
-
-        let parsed = text;
-        try { parsed = JSON.parse(text); } catch {}
-        throw new Error(`API error (${res.status}): ${res.statusText} - ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`);
-      } catch (err) {
-        // Handle rate-limit / retry exhaustion gracefully so callers don't get uncaught rejections.
-        const msg = String(err || '').toLowerCase();
-        if (msg.includes('rate') || msg.includes('failed to fetch after') || msg.includes('global api rate limit')) {
-          console.warn('[fetchAPI] request failed due to rate limiting or retries exhausted:', err);
-          try { showNotice('API rate limit or network error — try again shortly'); } catch {}
-          // Return empty result so callers can handle "no data" without throwing.
-          return {};
-        }
-        // Other errors: rethrow so callers can opt-in to handle them.
-        throw err;
+      const res = await fetchWithRetry(url, opts, 2, 700);
+      const text = await res.text();
+      if (res.status === 403 && usingLocalProxy && API_TOKEN) {
+        const directUrl = path.startsWith('http') ? path : `https://api.football-data.org/v4/${path}`;
+        const directOpts = { ...opts, headers: { ...opts.headers, 'X-Auth-Token': API_TOKEN } };
+        const directRes = await fetchWithRetry(directUrl, directOpts, 1, 900);
+        const directText = await directRes.text();
+        if (directRes.ok) return JSON.parse(directText);
       }
-    })();
-
+      if (res.ok) return JSON.parse(text);
+      throw new Error(`API error (${res.status}): ${res.statusText}`);
+    })().catch(err => {
+      if (err.message.includes('rate') || err.message.includes('failed to fetch')) {
+        showNotice('API rate limit or network error — try again shortly');
+        return {};
+      }
+      throw err;
+    }).finally(() => inFlightRequests.delete(key));
     inFlightRequests.set(key, p);
-    // ensure cleanup
-    p.finally(() => inFlightRequests.delete(key));
     return p;
-  }
+  };
 
-  // Loaders and search handlers
-
-  async function loadCompetitions() {
+  // Loaders
+  const loadCompetitions = async () => {
     try {
       const data = await fetchAPI('/v4/competitions');
-      const comps = data.competitions || [];
-      cachedCompetitions = comps;
-      populateSelect(competitionsSelect, comps);
-      displayCompetitions(comps);
+      cachedCompetitions = data.competitions || [];
+      populateSelect(competitionsSelect, cachedCompetitions);
+      displayCompetitions(cachedCompetitions);
     } catch {
       populateSelect(competitionsSelect, []);
       displayCompetitions([]);
     }
-  }
-
-  async function loadTeamsForCompetition(compId) {
+  };
+  const loadTeamsForCompetition = async compId => {
     if (!compId) {
       populateSelect(teamsSelect, []);
       displayTeams([]);
@@ -643,11 +331,8 @@ document.addEventListener('DOMContentLoaded', () => {
       displayTeams(cachedTeams);
       if (cachedTeams.length) {
         teamsSelect.value = cachedTeams[0].id;
-        // ensure selecting programmatically triggers team-change behavior
         teamsSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      } else {
-        clearPlayers();
-      }
+      } else clearPlayers();
     } catch {
       cachedTeams = [];
       cachedSquads.clear();
@@ -655,30 +340,14 @@ document.addEventListener('DOMContentLoaded', () => {
       displayTeams([]);
       clearPlayers();
     }
-  }
-
-  async function searchCompetitions(query) {
-    try {
-      const data = await fetchAPI('/v4/competitions');
-      const matching = (data.competitions || []).filter(c => c.name?.toLowerCase().includes(query));
-      displayCompetitions(matching);
-      displayTeams([]);
-      clearPlayers();
-    } catch {
-      displayCompetitions([]);
-      displayTeams([]);
-      clearPlayers();
-    }
-  }
-
-  async function loadMatchesForDate(date) {
+  };
+  const loadMatchesForDate = async date => {
     if (!date) {
       setMatchesDateLabel(null);
       return displayMatches([]);
     }
     try {
       lastMatchesParams = { dateFrom: date, dateTo: date };
-      // ensure the date input shows the date we are loading
       if (matchDateInput) matchDateInput.value = date;
       setMatchesDateLabel(date, date);
       const data = await fetchAPI(`/v4/matches?dateFrom=${date}&dateTo=${date}`);
@@ -687,26 +356,19 @@ document.addEventListener('DOMContentLoaded', () => {
       setMatchesDateLabel(null);
       displayMatches([]);
     }
-  }
-
-  async function loadMatchesForToday() {
-    const today = getTodayStr();
-    await loadMatchesForDate(today);
-  }
-
-  async function loadMatchesForPastWeekend() {
+  };
+  const loadMatchesForToday = async () => { const today = getTodayStr(); await loadMatchesForDate(today); };
+  const loadMatchesForPastWeekend = async () => {
     const today = new Date();
-    const daysBackToSunday = today.getDay() === 0 ? 7 : today.getDay();
+    const daysBack = today.getDay() === 0 ? 7 : today.getDay();
     const lastSunday = new Date(today);
-    lastSunday.setDate(today.getDate() - daysBackToSunday);
+    lastSunday.setDate(today.getDate() - daysBack);
     const lastSaturday = new Date(lastSunday);
     lastSaturday.setDate(lastSunday.getDate() - 1);
     const fmt = d => d.toISOString().slice(0, 10);
     lastMatchesParams = { dateFrom: fmt(lastSaturday), dateTo: fmt(lastSunday) };
     try {
-      // show range in header (date input left blank because it's a range)
       setMatchesDateLabel(lastMatchesParams.dateFrom, lastMatchesParams.dateTo);
-      // Clear any single-date selection to indicate a range is shown
       if (matchDateInput) matchDateInput.value = '';
       const data = await fetchAPI(`/v4/matches?dateFrom=${lastMatchesParams.dateFrom}&dateTo=${lastMatchesParams.dateTo}`);
       displayMatches(data.matches || []);
@@ -714,231 +376,43 @@ document.addEventListener('DOMContentLoaded', () => {
       setMatchesDateLabel(null);
       displayMatches([]);
     }
-  }
-
-  async function refreshMatches() {
+  };
+  const refreshMatches = async () => {
     const selectedDate = (matchDateInput?.value || '').trim();
-    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
-
     const teamId = lastSelectedTeamId;
     const compId = lastSelectedCompetitionId;
-
-    // If a date is selected and a team is selected
-    if (teamId && selectedDate && isoDateRe.test(selectedDate)) {
+    if (teamId && selectedDate && ISO_DATE_REGEX.test(selectedDate)) {
       const matches = await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate });
       displayMatches(matches || []);
       return;
     }
-
-    // If a date is selected and a competition is selected
-    if (!teamId && compId && selectedDate && isoDateRe.test(selectedDate)) {
+    if (!teamId && compId && selectedDate && ISO_DATE_REGEX.test(selectedDate)) {
       const data = await fetchAPI(`/v4/competitions/${compId}/matches?dateFrom=${selectedDate}&dateTo=${selectedDate}`);
       displayMatches(data.matches || []);
       return;
     }
-
-    // If no date is selected, show default matches for team or competition
     if (teamId) {
       const matches = await getTeamMatches(teamId);
       displayMatches(matches || []);
       return;
     }
-
     if (compId) {
       const data = await fetchAPI(`/v4/competitions/${compId}/matches`);
       displayMatches(data.matches || []);
       return;
     }
-
-    // Fallback: show today's matches
     await loadMatchesForToday();
-  }
-
-  // Event Handlers
-  async function handleCompetitionChange() {
-    // track competition selection, prefer competition for refresh if no team selected
-    lastSelectedCompetitionId = competitionsSelect.value || null;
-    // selecting a competition should clear any previously selected team (unless user then picks a team)
-    lastSelectedTeamId = null;
-    await loadTeamsForCompetition(competitionsSelect.value);
-  }
-
-  async function handleTeamChange() {
-    // When a team is selected via the dropdown, load and show its matches.
-    const teamId = teamsSelect?.value;
-    // selecting a team should clear any previously selected competition (team takes precedence)
-    lastSelectedTeamId = teamId || null;
-    lastSelectedCompetitionId = null;
-    if (!teamId) {
-      clearPlayers();
-      displayMatches([]);
-      return;
-    }
-
-    clearPlayers(); // keep previous behavior of clearing players area
-    try {
-      // If a date is selected, prefer loading matches for that date
-      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
-      const selectedDate = (matchDateInput?.value || '').trim();
-      const matches = selectedDate && isoDateRe.test(selectedDate)
-        ? await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate })
-        : await getTeamMatches(teamId);
-      displayMatches(matches);
-      document.getElementById('matches-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (err) {
-      console.warn('[handleTeamChange] failed fetching matches for team', teamId, err);
-      displayMatches([]);
-    }
-  }
-
-  async function handleSearchInput() {
-    const q = (searchInput.value || '').trim().toLowerCase();
-    // If a competition is selected, filter teams client-side
-    if (competitionsSelect.value) {
-      if (!q) {
-        displayTeams(cachedTeams);
-        return;
-      }
-      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
-      displayTeams(matchingTeams);
-      return;
-    }
-    // Otherwise, search competitions
-    if (!q) {
-      hideSearchSuggestions();
-      await loadCompetitions();
-      return;
-    }
-    // Build suggestions: competitions + teams
-    try {
-      // ensure competitions cached
-      if (!cachedCompetitions.length) {
-        const data = await fetchAPI('/v4/competitions');
-        cachedCompetitions = data.competitions || [];
-      }
-    } catch {}
-
-    // Teams: prefer global teams cache, otherwise try to load once (may fail)
-    if (!globalTeamsLoaded) {
-      try {
-        const td = await fetchAPI('/v4/teams'); // may fail on some APIs
-        cachedGlobalTeams = td.teams || [];
-        globalTeamsLoaded = true;
-      } catch { globalTeamsLoaded = true; /* mark loaded to avoid retry spamming */ }
-    }
-
-    const comps = (cachedCompetitions || []).filter(c => c.name?.toLowerCase().includes(q)).slice(0, 5).map(c => ({ type: 'competition', id: c.id, name: c.name, extra: c }));
-    const teamsFromCache = (cachedGlobalTeams || []).concat(cachedTeams || []);
-    const uniqTeams = [];
-    const seenTeamIds = new Set();
-    for (const t of teamsFromCache) {
-      if (!t || !t.id) continue;
-      if (seenTeamIds.has(t.id)) continue;
-      if (t.name?.toLowerCase().includes(q)) {
-        uniqTeams.push({ type: 'team', id: t.id, name: t.name, extra: t });
-        seenTeamIds.add(t.id);
-      }
-      if (uniqTeams.length >= 6) break;
-    }
-
-    const suggestions = [...uniqTeams.slice(0,6), ...comps.slice(0,4)].slice(0,8);
-    // cache last shown list on box and render
-    createSuggestionBox();
-    suggestionBox._lastList = suggestions;
-    showSearchSuggestions(suggestions);
-  }
-
-  function handleToggleTheme() {
-    const isDark = !document.body.classList.contains('dark-mode');
-    setTheme(isDark);
-  }
-
-  function setTheme(isDark) {
-    document.body.classList.toggle('dark-mode', isDark);
-    document.body.classList.toggle('light-mode', !isDark);
-    if (toggleThemeBtn) {
-      toggleThemeBtn.textContent = isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode';
-      toggleThemeBtn.setAttribute('aria-pressed', String(isDark));
-      toggleThemeBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
-    }
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');
-  }
-
-  // Load theme preference from localStorage, default to system preference (then light mode)
-  const savedTheme = localStorage.getItem('theme');
-  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  setTheme(savedTheme ? savedTheme === 'dark' : !!prefersDark);
-
-  async function handleSearchButtonClick() {
-    const query = searchInput.value.trim().toLowerCase();
-    if (!query) {
-      await loadCompetitions();
-      await loadMatchesForToday();
-      return;
-    }
-
-    // Try to match a team first
-    try {
-      const teamData = await fetchAPI('/v4/teams'); // ⚠️ Only works if API supports this
-      const matchedTeam = (teamData.teams || []).find(t => t.name?.toLowerCase().includes(query));
-
-      if (matchedTeam) {
-        cachedTeams = [matchedTeam];
-        displayTeams(cachedTeams);
-        lastSelectedTeamId = matchedTeam.id;
-        lastSelectedCompetitionId = null;
-
-        const matches = await getTeamMatches(matchedTeam.id);
-        displayMatches(matches || []);
-        return;
-      }
-    } catch {
-      // fallback to competition search
-    }
-
-    // Try to match a competition
-    try {
-      const compData = await fetchAPI('/v4/competitions');
-      const matchedComp = (compData.competitions || []).find(c => c.name?.toLowerCase().includes(query));
-
-      if (matchedComp) {
-        displayCompetitions([matchedComp]);
-        lastSelectedCompetitionId = matchedComp.id;
-        lastSelectedTeamId = null;
-
-        const data = await fetchAPI(`/v4/competitions/${matchedComp.id}/matches`);
-        displayMatches(data.matches || []);
-        return;
-      }
-    } catch {
-      displayCompetitions([]);
-      displayMatches([]);
-    }
-
-    // If no match found
-    showNotice('No teams or competitions found for your search.');
-    displayTeams([]);
-    displayCompetitions([]);
-    displayMatches([]);
-  }
-
-  // teamId: number/string, opts: { dateFrom, dateTo } (ISO YYYY-MM-DD)
-  async function getTeamMatches(teamId, opts = {}) {
+  };
+  const getTeamMatches = async (teamId, opts = {}) => {
     if (!teamId) return [];
-    const { dateFrom = '', dateTo = '' } = opts || {};
+    const { dateFrom = '', dateTo = '' } = opts;
     const now = Date.now();
     const teamKey = `${teamId}::${dateFrom}::${dateTo}`;
-
-    // Check cache
     const cached = teamMatchesCache.get(teamKey);
     if (cached && cached.expiresAt > now) return cached.data;
-
-    // In-flight dedupe per teamKey
     const inflight = inFlightTeamMatches.get(teamKey);
     if (inflight) return inflight;
-
     const p = (async () => {
-      // Build query if date filters provided
       const qs = [];
       if (dateFrom) qs.push(`dateFrom=${encodeURIComponent(dateFrom)}`);
       if (dateTo) qs.push(`dateTo=${encodeURIComponent(dateTo)}`);
@@ -948,72 +422,169 @@ document.addEventListener('DOMContentLoaded', () => {
       teamMatchesCache.set(teamKey, { data: matches, expiresAt: now + TEAM_MATCHES_CACHE_TTL_MS });
       return matches;
     })().finally(() => inFlightTeamMatches.delete(teamKey));
-
     inFlightTeamMatches.set(teamKey, p);
     return p;
-  }
+  };
 
-  async function handleTeamCardClick(event) {
+  // Event handlers
+  const handleCompetitionChange = async () => {
+    lastSelectedCompetitionId = competitionsSelect.value || null;
+    lastSelectedTeamId = null;
+    await loadTeamsForCompetition(competitionsSelect.value);
+  };
+  const handleTeamChange = async () => {
+    const teamId = teamsSelect?.value;
+    lastSelectedTeamId = teamId || null;
+    lastSelectedCompetitionId = null;
+    if (!teamId) {
+      clearPlayers();
+      displayEmptyMatches();
+      return;
+    }
+    clearPlayers();
+    try {
+      const selectedDate = (matchDateInput?.value || '').trim();
+      const matches = await fetchMatchesForTeam(teamId, selectedDate);
+      displayMatches(matches || []);
+      document.getElementById('matches-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch {
+      displayEmptyMatches();
+    }
+  };
+  const handleSearchInput = async () => {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    if (competitionsSelect.value) {
+      if (!q) {
+        displayTeams(cachedTeams);
+        return;
+      }
+      const matchingTeams = cachedTeams.filter(t => t.name?.toLowerCase().includes(q));
+      displayTeams(matchingTeams);
+      return;
+    }
+    if (!q) {
+      hideSearchSuggestions();
+      await loadCompetitions();
+      return;
+    }
+    try {
+      if (!cachedCompetitions.length) {
+        const data = await fetchAPI('/v4/competitions');
+        cachedCompetitions = data.competitions || [];
+      }
+    } catch {}
+    if (!globalTeamsLoaded) {
+      try {
+        const td = await fetchAPI('/v4/teams');
+        cachedGlobalTeams = td.teams || [];
+        globalTeamsLoaded = true;
+      } catch { globalTeamsLoaded = true; }
+    }
+    const comps = cachedCompetitions.filter(c => c.name?.toLowerCase().includes(q)).slice(0, 5).map(c => ({ type: 'competition', id: c.id, name: c.name, extra: c }));
+    const teamsFromCache = [...cachedGlobalTeams, ...cachedTeams];
+    const uniqTeams = [];
+    const seenIds = new Set();
+    for (const t of teamsFromCache) {
+      if (!t || !t.id || seenIds.has(t.id)) continue;
+      if (t.name?.toLowerCase().includes(q)) {
+        uniqTeams.push({ type: 'team', id: t.id, name: t.name, extra: t });
+        seenIds.add(t.id);
+      }
+      if (uniqTeams.length >= 6) break;
+    }
+    const suggestions = [...uniqTeams.slice(0, 6), ...comps.slice(0, 4)].slice(0, 8);
+    createSuggestionBox();
+    suggestionBox._lastList = suggestions;
+    showSearchSuggestions(suggestions);
+  };
+  const handleToggleTheme = () => {
+    const isDark = !document.body.classList.contains('dark-mode');
+    updateThemeUI(isDark);
+  };
+  const handleSearchButtonClick = async () => {
+    const query = searchInput.value.trim().toLowerCase();
+    if (!query) {
+      await loadCompetitions();
+      await loadMatchesForToday();
+      return;
+    }
+    try {
+      const teamData = await fetchAPI('/v4/teams');
+      const matchedTeam = (teamData.teams || []).find(t => t.name?.toLowerCase().includes(query));
+      if (matchedTeam) {
+        cachedTeams = [matchedTeam];
+        displayTeams(cachedTeams);
+        lastSelectedTeamId = matchedTeam.id;
+        lastSelectedCompetitionId = null;
+        const matches = await getTeamMatches(matchedTeam.id);
+        displayMatches(matches || []);
+        return;
+      }
+    } catch {}
+    try {
+      const compData = await fetchAPI('/v4/competitions');
+      const matchedComp = (compData.competitions || []).find(c => c.name?.toLowerCase().includes(query));
+      if (matchedComp) {
+        displayCompetitions([matchedComp]);
+        lastSelectedCompetitionId = matchedComp.id;
+        lastSelectedTeamId = null;
+        const data = await fetchAPI(`/v4/competitions/${matchedComp.id}/matches`);
+        displayMatches(data.matches || []);
+        return;
+      }
+    } catch {
+      displayCompetitions([]);
+      displayMatches([]);
+    }
+    showNotice('No teams or competitions found for your search.');
+    displayTeams([]);
+    displayCompetitions([]);
+    displayMatches([]);
+  };
+  const handleTeamCardClick = async event => {
     const card = event.target.closest('.team-card');
     if (!card) return;
     const teamId = card.getAttribute('data-team-id');
     if (!teamId) return;
-
     teamsSelect.value = teamId;
     lastSelectedTeamId = teamId;
     lastSelectedCompetitionId = null;
-
-    // Load and show matches for the clicked team
     try {
-      const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
       const selectedDate = (matchDateInput?.value || '').trim();
-      const matches = selectedDate && isoDateRe.test(selectedDate)
-        ? await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate })
-        : await getTeamMatches(teamId);
+      const matches = selectedDate && ISO_DATE_REGEX.test(selectedDate) ? await getTeamMatches(teamId, { dateFrom: selectedDate, dateTo: selectedDate }) : await getTeamMatches(teamId);
       displayMatches(matches);
-      const matchesEl = document.getElementById('matches-list');
-      if (matchesEl) matchesEl.scrollIntoView({ behavior: 'smooth' });
+      document.getElementById('matches-list')?.scrollIntoView({ behavior: 'smooth' });
     } catch {
       displayMatches([]);
     }
-  }
+  };
+
   // Attach listeners
   competitionsSelect?.addEventListener('change', handleCompetitionChange);
   teamsSelect?.addEventListener('change', handleTeamChange);
-  // Create a single debounced handler for search input
   const debouncedSearchInputHandler = debounce(handleSearchInput, SEARCH_DEBOUNCE_MS);
   searchInput?.addEventListener('input', debouncedSearchInputHandler);
   searchInput?.addEventListener('keydown', suggestionKeyHandler);
-  // hide suggestions when input loses focus
-  searchInput?.addEventListener('blur', () => { setTimeout(hideSearchSuggestions, 150); });
+  searchInput?.addEventListener('blur', () => setTimeout(hideSearchSuggestions, 150));
   searchBtn?.addEventListener('click', handleSearchButtonClick);
   toggleThemeBtn?.addEventListener('click', handleToggleTheme);
   document.getElementById('teams-list')?.addEventListener('click', handleTeamCardClick);
-  // Refresh button (loads matches for selected team/competition/date)
   document.getElementById('refreshBtn')?.addEventListener('click', refreshMatches);
-  // keep today button handler unchanged
-  // positionFilter listener removed (player UI removed)
 
   if (matchDateInput) {
-    // always keep max up-to-date (prevents selecting future dates)
     matchDateInput.max = getTodayStr();
-
-    // accept only ISO date (YYYY-MM-DD); empty → load past weekend
-    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
     matchDateInput.addEventListener('change', async e => {
       const date = (e.target.value || '').trim();
       if (!date) {
         await loadMatchesForPastWeekend();
         return;
       }
-      if (!isoDateRe.test(date)) {
+      if (!ISO_DATE_REGEX.test(date)) {
         showNotice('Invalid date format — use YYYY-MM-DD');
         return;
       }
       await loadMatchesForDate(date);
     });
-
-    // Allow clearing with Escape (convenience)
     matchDateInput.addEventListener('keydown', async e => {
       if (e.key === 'Escape') {
         matchDateInput.value = '';
@@ -1027,7 +598,6 @@ document.addEventListener('DOMContentLoaded', () => {
       todayMatchesBtn.disabled = true;
       try {
         const today = getTodayStr();
-        // update the date input and header, then load today's matches
         if (matchDateInput) matchDateInput.value = today;
         setMatchesDateLabel(today, today);
         await loadMatchesForDate(today);
@@ -1036,20 +606,16 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // Load theme
+  const savedTheme = localStorage.getItem('theme');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  updateThemeUI(savedTheme ? savedTheme === 'dark' : !!prefersDark);
+
   if (apiRequestsAllowed) {
     (async () => {
-      try {
-        await loadCompetitions();
-      } catch {
-        populateSelect(competitionsSelect, []);
-        displayCompetitions([]);
-        clearPlayers();
-      }
-      try {
-        await loadMatchesForPastWeekend();
-      } catch {
-        displayMatches([]);
-      }
+      try { await loadCompetitions(); } catch { populateSelect(competitionsSelect, []); displayCompetitions([]); clearPlayers(); }
+      try { await loadMatchesForPastWeekend(); } catch { displayMatches([]); }
     })();
   }
-})
+});
